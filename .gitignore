@@ -1,0 +1,51 @@
+# Environment files & Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+backend/venv/
+backend/env/
+venv/
+env/
+ENV/
+*.db
+*.sqlite3
+
+# Node & JavaScript
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build outputs
+dist/
+dist-ssr/
+build/
+web-build/
+.expo/
+
+# Uploads & Temporary artifacts
+backend/uploads/cards/*
+backend/uploads/avatars/*
+backend/uploads/qr/*
+!backend/uploads/cards/.gitkeep
+!backend/uploads/avatars/.gitkeep
+!backend/uploads/qr/.gitkeep
+backend/tests/sample_card.png
+
+# Operating System & IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

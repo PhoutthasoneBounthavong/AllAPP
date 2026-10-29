@@ -1,0 +1,16 @@
+{
+  "name": "business-contact-platform",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cardr - Business Contact & Scanner Platform",
+  "scripts": {
+    "dev": "npm --prefix web-admin run dev",
+    "start": "cmd /c start-all.bat",
+    "web": "npm --prefix web-admin run dev",
+    "build:web": "npm --prefix web-admin run build",
+    "mobile": "cmd /c start-mobile.bat",
+    "connect:supabase": "cmd /c connect-supabase.bat",
+    "backend": "cmd /c start-backend.bat",
+    "all": "cmd /c start-all.bat"
+  }
+}
