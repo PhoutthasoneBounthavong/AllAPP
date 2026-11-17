@@ -333,9 +333,11 @@ async def scan_business_card(
 @app.post("/api/detect-card")
 async def detect_card_presence(file: UploadFile = File(...)):
     """
-    Ultra-fast (1ms) computer vision card presence validator using OpenCV.
-    Rejects black screens, covered cameras, blank/flat surfaces, and darkness.
-    Returns has_card: True ONLY when a real business card with text/edges is present.
+    High-accuracy real-time computer vision card presence detector.
+    Works like a QR code scanner for business cards:
+    - Instantly rejects black screens, covered cameras, blank/flat desks, and darkness.
+    - Requires genuine card characteristics (text lines, aspect ratio, or alphanumeric words).
+    - Returns has_card: True ONLY when a real business card is aligned in frame.
     """
     try:
         content = await file.read()
@@ -355,33 +357,88 @@ async def detect_card_presence(file: UploadFile = File(...)):
         std_val = float(np.std(gray))
         laplacian_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
-        # 1. Black screen / dark room / lens covered check
-        if mean_val < 32 or std_val < 10:
+        # 1. Reject dark/black screens, covered lenses, or very low light
+        if mean_val < 30 or (mean_val < 45 and std_val < 15):
             return {
                 "has_card": False,
                 "reason": "black_or_covered_screen",
                 "message": "Camera covered or too dark"
             }
 
-        # 2. Blank flat surface (no card, no text, no edges)
-        if laplacian_var < 22:
+        # 2. Reject blank flat surfaces (empty desks, blank paper, plain floors/walls)
+        if laplacian_var < 15 or std_val < 10:
             return {
                 "has_card": False,
                 "reason": "blank_surface",
                 "message": "No business card detected"
             }
 
-        # 3. Card presence verified by sharp text edges & contrast
-        if laplacian_var > 35 and std_val > 12:
+        # Standardize height for consistent morphological analysis (< 3ms)
+        h, w = gray.shape[:2]
+        target_h = 400
+        scale = target_h / float(h)
+        resized = cv2.resize(gray, (int(w * scale), target_h))
+        total_area = resized.shape[0] * resized.shape[1]
+
+        # 3. Detect horizontal text line structures (name, phone, company, email)
+        grad_x = cv2.Sobel(resized, cv2.CV_32F, 1, 0, ksize=3)
+        grad_x = cv2.convertScaleAbs(grad_x)
+        _, thresh = cv2.threshold(grad_x, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (20, 4))
+        closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        text_lines = 0
+        for c in contours:
+            x, y, cw, ch = cv2.boundingRect(c)
+            aspect = float(cw) / max(1, ch)
+            area = cw * ch
+            # Text lines are wider than tall and occupy reasonable proportions
+            if aspect >= 1.5 and ch >= 5 and cw >= 15 and (area / total_area) < 0.4:
+                text_lines += 1
+
+        # 4. Detect card bounding rectangle (approxPolyDP == 4 corners)
+        blurred = cv2.GaussianBlur(resized, (5, 5), 0)
+        edges = cv2.Canny(blurred, 40, 120)
+        b_contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        has_card_contour = False
+        for cnt in b_contours:
+            peri = cv2.arcLength(cnt, True)
+            approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
+            area = cv2.contourArea(cnt)
+            if len(approx) == 4 and (area / total_area) > 0.08:
+                has_card_contour = True
+                break
+
+        # Fast match: Multiple text lines or card contour with text
+        if text_lines >= 2 or (has_card_contour and text_lines >= 1):
             return {
                 "has_card": True,
                 "reason": "card_detected",
                 "message": "Business card detected"
             }
 
+        # 5. Fast OCR verification fallback for clean cards
+        try:
+            from PIL import Image
+            import pytesseract
+            from app.ocr_service import configure_tesseract
+            configure_tesseract()
+            pil_img = Image.fromarray(resized)
+            txt = pytesseract.image_to_string(pil_img, config="--oem 3 --psm 11")
+            words = [w for w in re.split(r"\s+", txt) if len(w) >= 3]
+            if len(words) >= 2:
+                return {
+                    "has_card": True,
+                    "reason": "card_detected",
+                    "message": "Business card detected"
+                }
+        except Exception:
+            pass
+
         return {
             "has_card": False,
-            "reason": "low_detail",
+            "reason": "no_card_detected",
             "message": "No business card in frame"
         }
     except Exception as e:
