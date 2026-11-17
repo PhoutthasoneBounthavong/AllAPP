@@ -5,17 +5,30 @@ import io
 import uuid
 import re
 from typing import Optional, List, Dict, Any
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Query, Response, status
+from dotenv import load_dotenv
+
+# Load environment variables from .env
+load_dotenv()
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Query, Response, status, Depends, BackgroundTasks
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from PIL import Image
 
 from app.database import get_db_connection, init_db
 from app.ocr_service import process_card_image
 from app.vcard_service import generate_vcard_content
 from app.qr_service import generate_qr_code_image
+from app.ai_vision_service import extract_card_with_gemini, generate_followup_message
+from app.auth_service import (
+    hash_password,
+    verify_password,
+    create_access_token,
+    get_current_user_optional,
+    get_current_user_required,
+)
 
 # Guard against decompression bomb attacks in PIL
 Image.MAX_IMAGE_PIXELS = 50_000_000
@@ -46,6 +59,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request, exc):
+    body = await request.body()
+    print(f"!!! 422 VALIDATION ERROR on {request.url}: {exc.errors()}, Body: {body.decode(errors='ignore')}")
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": exc.errors()}
+    )
 
 # Ensure upload directories exist
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
@@ -87,30 +109,45 @@ ALLOWED_CARD_FIELDS = {
 
 # --- Pydantic Models ---
 
-class CardCreateRequest(BaseModel):
+class UserRegisterRequest(BaseModel):
+    email: str
+    password: str
     full_name: str
-    job_title: Optional[str] = ""
-    company: Optional[str] = ""
-    phone: Optional[str] = ""
-    email: Optional[str] = ""
-    website: Optional[str] = ""
-    address: Optional[str] = ""
-    notes: Optional[str] = ""
-    tags: Optional[str] = ""
-    raw_text: Optional[str] = ""
-    image_url: Optional[str] = ""
+
+class UserLoginRequest(BaseModel):
+    email: str
+    password: str
+
+class CardCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    full_name: Optional[Any] = "Unnamed Contact"
+    job_title: Optional[Any] = ""
+    company: Optional[Any] = ""
+    phone: Optional[Any] = ""
+    email: Optional[Any] = ""
+    website: Optional[Any] = ""
+    address: Optional[Any] = ""
+    notes: Optional[Any] = ""
+    tags: Optional[Any] = ""
+    raw_text: Optional[Any] = ""
+    image_url: Optional[Any] = ""
+    user_id: Optional[Any] = None
+    force: Optional[Any] = False
 
 class CardUpdateRequest(BaseModel):
-    full_name: Optional[str] = None
-    job_title: Optional[str] = None
-    company: Optional[str] = None
-    phone: Optional[str] = None
-    email: Optional[str] = None
-    website: Optional[str] = None
-    address: Optional[str] = None
-    notes: Optional[str] = None
-    tags: Optional[str] = None
-    image_url: Optional[str] = None
+    model_config = ConfigDict(extra="ignore")
+
+    full_name: Optional[Any] = None
+    job_title: Optional[Any] = None
+    company: Optional[Any] = None
+    phone: Optional[Any] = None
+    email: Optional[Any] = None
+    website: Optional[Any] = None
+    address: Optional[Any] = None
+    notes: Optional[Any] = None
+    tags: Optional[Any] = None
+    image_url: Optional[Any] = None
 
 class DigitalCardUpdateRequest(BaseModel):
     full_name: str
@@ -133,12 +170,99 @@ class DigitalCardUpdateRequest(BaseModel):
 def health_check():
     return {"status": "ok", "app": "BusinessContact API", "version": "1.0.0"}
 
+# --- User Authentication Endpoints ---
+
+@app.post("/api/auth/register")
+def register_user(req: UserRegisterRequest):
+    email = req.email.strip().lower()
+    full_name = req.full_name.strip()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="A valid email is required.")
+    if len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
+    if not full_name:
+        raise HTTPException(status_code=400, detail="Full name is required.")
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM users WHERE email = ?", (email,))
+    if cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=409, detail="An account with this email already exists.")
+
+    pwd_hash = hash_password(req.password)
+    cursor.execute("""
+    INSERT INTO users (email, password_hash, full_name)
+    VALUES (?, ?, ?)
+    """, (email, pwd_hash, full_name))
+    conn.commit()
+    user_id = cursor.lastrowid
+    conn.close()
+
+    token = create_access_token(user_id, email, full_name)
+    return {
+        "success": True,
+        "token": token,
+        "user": {
+            "id": user_id,
+            "email": email,
+            "full_name": full_name,
+        }
+    }
+
+@app.post("/api/auth/login")
+def login_user(req: UserLoginRequest):
+    email = req.email.strip().lower()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, email, password_hash, full_name, avatar_url FROM users WHERE email = ?", (email,))
+    user = cursor.fetchone()
+    conn.close()
+
+    if not user or not verify_password(req.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+    user_id = user["id"]
+    full_name = user["full_name"]
+    token = create_access_token(user_id, email, full_name)
+    return {
+        "success": True,
+        "token": token,
+        "user": {
+            "id": user_id,
+            "email": email,
+            "full_name": full_name,
+            "avatar_url": user["avatar_url"],
+        }
+    }
+
+@app.get("/api/auth/me")
+def get_current_user_profile(user: dict = Depends(get_current_user_required)):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, email, full_name, avatar_url, created_at FROM users WHERE id = ?", (user["user_id"],))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"user": dict(row)}
+
+def save_file_to_disk(path: str, data: bytes):
+    try:
+        with open(path, "wb") as f:
+            f.write(data)
+    except Exception as e:
+        print(f"Error saving image to disk: {e}")
+
 # 1. OCR Scan Endpoint
 @app.post("/api/scan")
-async def scan_business_card(file: UploadFile = File(...)):
+async def scan_business_card(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...)
+):
     """
-    Accepts an uploaded image file, validates size and format,
-    processes through OCR, and returns parsed contact details.
+    Accepts an uploaded image file, processes in-memory through Gemini Vision AI,
+    and writes to disk asynchronously for maximum speed.
     """
     # 1. Validate file extension
     file_ext = os.path.splitext(file.filename or "")[1].lower()
@@ -172,14 +296,22 @@ async def scan_business_card(file: UploadFile = File(...)):
             detail="Uploaded file is not a valid or readable image."
         )
 
-    # 4. Save securely with UUID filename
+    # 4. Generate unique filename and initiate async background disk write
     unique_filename = f"{uuid.uuid4().hex}{file_ext}"
     saved_path = os.path.join(CARDS_DIR, unique_filename)
     
     try:
-        with open(saved_path, "wb") as f:
-            f.write(content)
+        # Background task saves file to disk without blocking the AI call
+        background_tasks.add_task(save_file_to_disk, saved_path, bytes(content))
             
+        # 1. Primary: Extract with Google Gemini Multimodal Vision AI directly in-memory!
+        ai_card = extract_card_with_gemini(bytes(content))
+        if ai_card:
+            ai_card["image_url"] = f"/uploads/cards/{unique_filename}"
+            return {"success": True, "card": ai_card, "source": "gemini_ai"}
+
+        # 2. Hybrid Fallback: Local Tesseract OCR (requires saved file)
+        save_file_to_disk(saved_path, bytes(content))
         ocr_result = process_card_image(saved_path)
         if not ocr_result.get("success"):
             # Clean up saved file if OCR completely failed
@@ -192,21 +324,87 @@ async def scan_business_card(file: UploadFile = File(...)):
             
         data = ocr_result["data"]
         data["image_url"] = f"/uploads/cards/{unique_filename}"
-        return {"success": True, "card": data}
+        return {"success": True, "card": data, "source": "tesseract_ocr"}
     except Exception as e:
         if os.path.exists(saved_path):
             os.remove(saved_path)
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/detect-card")
+async def detect_card_presence(file: UploadFile = File(...)):
+    """
+    Ultra-fast (1ms) computer vision card presence validator using OpenCV.
+    Rejects black screens, covered cameras, blank/flat surfaces, and darkness.
+    Returns has_card: True ONLY when a real business card with text/edges is present.
+    """
+    try:
+        content = await file.read()
+        if not content:
+            return {"has_card": False, "reason": "empty"}
+
+        import cv2
+        import numpy as np
+
+        nparr = np.frombuffer(content, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img is None:
+            return {"has_card": False, "reason": "invalid_image"}
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        mean_val = float(np.mean(gray))
+        std_val = float(np.std(gray))
+        laplacian_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+        # 1. Black screen / dark room / lens covered check
+        if mean_val < 32 or std_val < 10:
+            return {
+                "has_card": False,
+                "reason": "black_or_covered_screen",
+                "message": "Camera covered or too dark"
+            }
+
+        # 2. Blank flat surface (no card, no text, no edges)
+        if laplacian_var < 22:
+            return {
+                "has_card": False,
+                "reason": "blank_surface",
+                "message": "No business card detected"
+            }
+
+        # 3. Card presence verified by sharp text edges & contrast
+        if laplacian_var > 35 and std_val > 12:
+            return {
+                "has_card": True,
+                "reason": "card_detected",
+                "message": "Business card detected"
+            }
+
+        return {
+            "has_card": False,
+            "reason": "low_detail",
+            "message": "No business card in frame"
+        }
+    except Exception as e:
+        return {"has_card": False, "error": str(e)}
+
 # 2. Scanned Cards CRUD
 @app.get("/api/cards")
-def list_cards(search: Optional[str] = None, tag: Optional[str] = None):
+def list_cards(
+    search: Optional[str] = None,
+    tag: Optional[str] = None,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)
+):
     conn = get_db_connection()
     cursor = conn.cursor()
     
     query = "SELECT * FROM scanned_cards WHERE 1=1"
     params = []
     
+    # User scoping: if authenticated, filter by user's cards (or legacy user_id=1 for demo items)
+    if current_user:
+        query += " AND (user_id = ? OR user_id = 1)"
+        params.append(current_user["user_id"])
+        
     if search:
         search_param = f"%{search.strip()}%"
         query += " AND (full_name LIKE ? OR company LIKE ? OR email LIKE ? OR job_title LIKE ?)"
@@ -224,19 +422,101 @@ def list_cards(search: Optional[str] = None, tag: Optional[str] = None):
     conn.close()
     return {"cards": cards, "total": len(cards)}
 
+def to_clean_str(val: Any, default: str = "") -> str:
+    """Safely convert any value (None, list, int, etc.) to a clean string."""
+    if val is None:
+        return default
+    if isinstance(val, (list, tuple)):
+        return ", ".join(str(v).strip() for v in val if v)
+    return str(val).strip()
+
 @app.post("/api/cards")
-def create_card(card: CardCreateRequest):
+def create_card(
+    card: CardCreateRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)
+):
+    # Safely resolve user_id even if card.user_id is None, empty string, or non-numeric
+    raw_uid = current_user["user_id"] if current_user else card.user_id
+    try:
+        user_id = int(raw_uid) if raw_uid is not None and str(raw_uid).strip().isdigit() else 1
+    except (ValueError, TypeError):
+        user_id = 1
+
+    card_name = to_clean_str(card.full_name) or "Unnamed Contact"
+    job_title = to_clean_str(card.job_title)
+    company = to_clean_str(card.company)
+    phone = to_clean_str(card.phone)
+    email = to_clean_str(card.email)
+    website = to_clean_str(card.website)
+    address = to_clean_str(card.address)
+    notes = to_clean_str(card.notes)
+    tags = to_clean_str(card.tags)
+    raw_text = to_clean_str(card.raw_text)
+    image_url = to_clean_str(card.image_url)
+
+    is_force = bool(card.force) if card.force not in ("false", "False", "0", 0, None, False) else False
+
     conn = get_db_connection()
     cursor = conn.cursor()
+
+    # Duplicate check: check if this business card already exists in this user's vault
+    if not is_force:
+        clean_email = email.lower()
+        clean_phone = re.sub(r"[^\d+]", "", phone)
+        clean_name = card_name.lower()
+        clean_company = company.lower()
+
+        existing = None
+        # 1. Match by Email if present
+        if clean_email:
+            cursor.execute("""
+            SELECT * FROM scanned_cards 
+            WHERE user_id = ? AND LOWER(TRIM(email)) = ?
+            LIMIT 1
+            """, (user_id, clean_email))
+            existing = cursor.fetchone()
+
+        # 2. Match by Phone suffix if present
+        if not existing and len(clean_phone) >= 7:
+            phone_suffix = clean_phone[-8:]
+            cursor.execute("""
+            SELECT * FROM scanned_cards
+            WHERE user_id = ? AND phone LIKE ?
+            LIMIT 1
+            """, (user_id, f"%{phone_suffix}%"))
+            existing = cursor.fetchone()
+
+        # 3. Match by Name + Company if both are meaningful
+        if not existing and clean_name != "unnamed contact" and clean_company:
+            cursor.execute("""
+            SELECT * FROM scanned_cards
+            WHERE user_id = ? AND LOWER(TRIM(full_name)) = ? AND LOWER(TRIM(company)) = ?
+            LIMIT 1
+            """, (user_id, clean_name, clean_company))
+            existing = cursor.fetchone()
+
+        if existing:
+            existing_dict = dict(existing)
+            conn.close()
+            return JSONResponse(
+                status_code=status.HTTP_409_CONFLICT,
+                content={
+                    "success": False,
+                    "already_exists": True,
+                    "message": f"'{existing_dict.get('full_name')}' from '{existing_dict.get('company') or 'this company'}' already exists in your Cards Vault.",
+                    "existing_card": existing_dict,
+                }
+            )
+
     cursor.execute("""
     INSERT INTO scanned_cards (
-        full_name, job_title, company, phone, email, website,
+        user_id, full_name, job_title, company, phone, email, website,
         address, notes, tags, raw_text, image_url
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
-        card.full_name, card.job_title, card.company, card.phone,
-        card.email, card.website, card.address, card.notes,
-        card.tags, card.raw_text, card.image_url
+        user_id, card_name, job_title, company, phone,
+        email, website, address, notes,
+        tags, raw_text, image_url
     ))
     conn.commit()
     card_id = cursor.lastrowid
@@ -306,6 +586,35 @@ def delete_card(card_id: int):
     conn.close()
     return {"success": True, "message": "Card deleted successfully"}
 
+class FollowUpRequest(BaseModel):
+    context: Optional[str] = ""
+
+@app.post("/api/cards/{card_id}/followup")
+def generate_card_followup(card_id: int, req: Optional[FollowUpRequest] = None):
+    """
+    Generates a personalized AI networking follow-up message for a scanned contact.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM scanned_cards WHERE id = ?", (card_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Card not found")
+
+    card_data = dict(row)
+    context_text = req.context if req else ""
+    message = generate_followup_message(card_data, context_text)
+    if not message:
+        # Fallback template if Gemini key not set
+        name = card_data.get("full_name") or "there"
+        company = card_data.get("company") or ""
+        subject = f"Following up from our conversation - {name}"
+        body = f"Hi {name},\n\nIt was great connecting with you{' from ' + company if company else ''}. I'd love to stay in touch and explore ways we can collaborate.\n\nBest regards,\n[Your Name]"
+        return {"success": True, "subject": subject, "body": body, "source": "template"}
+
+    return {"success": True, "message": message, "source": "gemini_ai"}
+
 # 3. vCard and Export Endpoints
 @app.get("/api/cards/{card_id}/vcard")
 def download_card_vcard(card_id: int):
@@ -325,6 +634,42 @@ def download_card_vcard(card_id: int):
         content=vcard_str,
         media_type="text/vcard",
         headers={"Content-Disposition": f'attachment; filename="{safe_name}.vcf"'}
+    )
+
+@app.get("/api/vcard/quick")
+def quick_vcard_download(
+    full_name: Optional[str] = "Business Contact",
+    job_title: Optional[str] = "",
+    company: Optional[str] = "",
+    phone: Optional[str] = "",
+    email: Optional[str] = "",
+    website: Optional[str] = "",
+    address: Optional[str] = "",
+    notes: Optional[str] = ""
+):
+    """
+    On-the-fly vCard 3.0 generation for iOS Safari & Android.
+    Opening this endpoint directly triggers Apple iOS Contacts sheet to 'Add to Contacts'.
+    """
+    card_dict = {
+        "full_name": full_name or "Business Contact",
+        "job_title": job_title or "",
+        "company": company or "",
+        "phone": phone or "",
+        "email": email or "",
+        "website": website or "",
+        "address": address or "",
+        "notes": notes or ""
+    }
+    vcard_str = generate_vcard_content(card_dict)
+    safe_name = sanitize_filename(full_name or "contact")
+    return Response(
+        content=vcard_str,
+        media_type="text/vcard; charset=utf-8",
+        headers={
+            "Content-Disposition": f'inline; filename="{safe_name}.vcf"',
+            "Content-Type": "text/vcard; charset=utf-8"
+        }
     )
 
 @app.get("/api/cards/export/csv")

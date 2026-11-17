@@ -17,10 +17,35 @@ def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Scanned Business Cards
+    # 1. Users Table for Multi-user Account Support
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT UNIQUE NOT NULL COLLATE NOCASE,
+        password_hash TEXT NOT NULL,
+        full_name TEXT NOT NULL,
+        avatar_url TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    
+    # Seed default user if none exists
+    cursor.execute("SELECT COUNT(*) FROM users")
+    if cursor.fetchone()[0] == 0:
+        # Import auth_service hash function
+        from app.auth_service import hash_password
+        default_pwd = hash_password("demo1234")
+        cursor.execute("""
+        INSERT INTO users (email, password_hash, full_name)
+        VALUES (?, ?, ?)
+        """, ("demo@cardr.app", default_pwd, "Demo User"))
+    
+    # 2. Scanned Business Cards
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS scanned_cards (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER DEFAULT 1,
         full_name TEXT,
         job_title TEXT,
         company TEXT,
@@ -37,10 +62,17 @@ def init_db():
     )
     """)
     
-    # Digital Business Cards (Shareable profile like Cardr)
+    # Check if user_id column exists on scanned_cards (migration)
+    cursor.execute("PRAGMA table_info(scanned_cards)")
+    columns = [row["name"] for row in cursor.fetchall()]
+    if "user_id" not in columns:
+        cursor.execute("ALTER TABLE scanned_cards ADD COLUMN user_id INTEGER DEFAULT 1")
+    
+    # 3. Digital Business Cards (Shareable profile like Cardr)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS digital_cards (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER DEFAULT 1,
         slug TEXT UNIQUE NOT NULL,
         full_name TEXT NOT NULL,
         job_title TEXT,
@@ -63,6 +95,12 @@ def init_db():
     )
     """)
     
+    # Check if user_id column exists on digital_cards (migration)
+    cursor.execute("PRAGMA table_info(digital_cards)")
+    columns = [row["name"] for row in cursor.fetchall()]
+    if "user_id" not in columns:
+        cursor.execute("ALTER TABLE digital_cards ADD COLUMN user_id INTEGER DEFAULT 1")
+    
     # Seed default digital card if none exists
     cursor.execute("SELECT COUNT(*) FROM digital_cards")
     if cursor.fetchone()[0] == 0:
@@ -78,10 +116,11 @@ def init_db():
         ])
         cursor.execute("""
         INSERT INTO digital_cards (
-            slug, full_name, job_title, company, headline, bio, theme,
+            user_id, slug, full_name, job_title, company, headline, bio, theme,
             phone, email, website, address, social_links, custom_buttons
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
+            1,
             "alex-morgan",
             "Alex Morgan",
             "Chief Executive Officer & Founder",
