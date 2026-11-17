@@ -17,6 +17,7 @@ import {
   List as ListIcon,
   Calendar,
   Sparkles,
+  MessageCircle,
 } from "lucide-react";
 import { getCardVcardUrl, getExportCsvUrl, deleteCard, getImageUrl } from "../api";
 
@@ -45,6 +46,32 @@ export default function CardsVault({ cards, onRefresh, onSelectCard }) {
     } catch (err) {
       alert("Error deleting card: " + err.message);
     }
+  };
+
+  const parseMultiplePhones = (phoneString) => {
+    if (!phoneString) return [];
+    const rawParts = phoneString.split(/[,/|;\n&]|\bor\b|\s{2,}/i);
+    const phones = [];
+    for (let part of rawParts) {
+      const trimmed = part.trim();
+      const digits = trimmed.replace(/[^\d]/g, "");
+      if (digits.length >= 7) {
+        phones.push(trimmed);
+      }
+    }
+    if (phones.length === 0 && phoneString.trim()) {
+      return [phoneString.trim()];
+    }
+    return phones;
+  };
+
+  const getWhatsAppUrl = (phone) => {
+    if (!phone) return "";
+    let clean = phone.replace(/[^\d]/g, "");
+    if (clean.startsWith("0") && (clean.length === 9 || clean.length === 10)) {
+      clean = "66" + clean.slice(1);
+    }
+    return `https://wa.me/${clean}`;
   };
 
   return (
@@ -175,9 +202,26 @@ export default function CardsVault({ cards, onRefresh, onSelectCard }) {
                 {/* Contact Snippets */}
                 <div className="space-y-1.5 text-xs text-[#636366] dark:text-[#AEAEB2] mb-4">
                   {card.phone && (
-                    <div className="flex items-center gap-2 truncate">
-                      <Phone className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                      <span className="truncate">{card.phone}</span>
+                    <div className="space-y-1">
+                      {parseMultiplePhones(card.phone).map((p, pIdx, arr) => (
+                        <div key={pIdx} className="flex items-center justify-between gap-2 truncate">
+                          <div className="flex items-center gap-2 truncate min-w-0">
+                            <Phone className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                            <span className="truncate">{p}</span>
+                          </div>
+                          <a
+                            href={getWhatsAppUrl(p)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20 text-[10px] font-semibold transition-colors shrink-0"
+                            title={`Chat on WhatsApp (${p})`}
+                          >
+                            <MessageCircle className="w-3 h-3" />
+                            <span>{arr.length > 1 ? `WA #${pIdx + 1}` : "WhatsApp"}</span>
+                          </a>
+                        </div>
+                      ))}
                     </div>
                   )}
                   {card.email && (
@@ -243,11 +287,37 @@ export default function CardsVault({ cards, onRefresh, onSelectCard }) {
                     <div className="text-[11px] text-[#86868B]">{card.job_title}</div>
                   </td>
                   <td className="px-4 py-3 font-semibold text-[#0071E3] dark:text-[#409CFF]">{card.company || "—"}</td>
-                  <td className="px-4 py-3 text-[#636366] dark:text-[#AEAEB2]">{card.phone || "—"}</td>
+                  <td className="px-4 py-3 text-[#636366] dark:text-[#AEAEB2]">
+                    {card.phone ? (
+                      <div className="space-y-0.5">
+                        {parseMultiplePhones(card.phone).map((p, pIdx) => (
+                          <div key={pIdx}>{p}</div>
+                        ))}
+                      </div>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-[#636366] dark:text-[#AEAEB2]">{card.email || "—"}</td>
                   <td className="px-4 py-3 text-[#86868B]">{new Date(card.created_at).toLocaleDateString()}</td>
                   <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center justify-end gap-2">
+                      {card.phone &&
+                        parseMultiplePhones(card.phone).map((p, pIdx, arr) => (
+                          <a
+                            key={pIdx}
+                            href={getWhatsAppUrl(p)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="p-1.5 text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 rounded-apple-sm transition-colors"
+                            title={`Chat on WhatsApp (${p})`}
+                          >
+                            <span className="flex items-center text-[10px] font-bold gap-0.5">
+                              <MessageCircle className="w-3.5 h-3.5" />
+                              {arr.length > 1 && <span>#{pIdx + 1}</span>}
+                            </span>
+                          </a>
+                        ))}
                       <a
                         href={getCardVcardUrl(card.id)}
                         download
@@ -258,8 +328,7 @@ export default function CardsVault({ cards, onRefresh, onSelectCard }) {
                       </a>
                       <button
                         onClick={(e) => handleDelete(card.id, e)}
-                        className="p-1.5 text-[#86868B] hover:text-rose-500 rounded-apple-sm hover:bg-rose-50 dark:hover:bg-rose-950/30"
-                        title="Delete Card"
+                        className="p-1.5 text-[#86868B] hover:text-rose-500 rounded-apple-sm hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
@@ -308,11 +377,27 @@ export default function CardsVault({ cards, onRefresh, onSelectCard }) {
                 </div>
               )}
               {selectedCard.phone && (
-                <div className="flex items-center gap-3">
-                  <Phone className="w-4 h-4 text-emerald-500" />
-                  <a href={`tel:${selectedCard.phone}`} className="hover:underline text-emerald-600 dark:text-emerald-400 font-medium">
-                    {selectedCard.phone}
-                  </a>
+                <div className="space-y-2">
+                  {parseMultiplePhones(selectedCard.phone).map((p, pIdx, arr) => (
+                    <div key={pIdx} className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-3">
+                        <Phone className="w-4 h-4 text-emerald-500" />
+                        <a href={`tel:${p}`} className="hover:underline text-emerald-600 dark:text-emerald-400 font-medium">
+                          {p}
+                        </a>
+                      </div>
+                      <a
+                        href={getWhatsAppUrl(p)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-apple-sm bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20 text-xs font-semibold transition-colors"
+                        title={`Chat on WhatsApp (${p})`}
+                      >
+                        <MessageCircle className="w-3.5 h-3.5" />
+                        <span>{arr.length > 1 ? `WhatsApp #${pIdx + 1}` : "WhatsApp"}</span>
+                      </a>
+                    </div>
+                  ))}
                 </div>
               )}
               {selectedCard.email && (
@@ -345,7 +430,20 @@ export default function CardsVault({ cards, onRefresh, onSelectCard }) {
               </div>
             )}
 
-            <div className="pt-3 border-t border-black/[0.06] dark:border-white/[0.08] flex items-center justify-end gap-2">
+            <div className="pt-3 border-t border-black/[0.06] dark:border-white/[0.08] flex flex-wrap items-center justify-end gap-2">
+              {selectedCard.phone &&
+                parseMultiplePhones(selectedCard.phone).map((p, pIdx, arr) => (
+                  <a
+                    key={pIdx}
+                    href={getWhatsAppUrl(p)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-apple-md bg-emerald-600 text-white text-xs font-semibold shadow-sm hover:bg-emerald-700 transition-colors"
+                  >
+                    <MessageCircle className="w-3.5 h-3.5" />
+                    <span>{arr.length > 1 ? `WhatsApp #${pIdx + 1}` : "Chat on WhatsApp"}</span>
+                  </a>
+                ))}
               <a
                 href={getCardVcardUrl(selectedCard.id)}
                 download
