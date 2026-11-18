@@ -34,7 +34,7 @@ from app.auth_service import (
 Image.MAX_IMAGE_PIXELS = 50_000_000
 
 app = FastAPI(
-    title="Business Contact & Cardr Platform API",
+    title="Business Contact & SBusinessCard Platform API",
     description="Apple HIG-inspired Business Card Scanner & Digital Business Card Platform",
     version="1.0.0"
 )

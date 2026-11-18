@@ -19,7 +19,7 @@ export default function Navigation({ activeTab, setActiveTab, darkMode, setDarkM
           </div>
           <div>
             <div className="flex items-center gap-1.5 sm:gap-2">
-              <span className="font-semibold text-base sm:text-lg tracking-tight text-[#1D1D1F] dark:text-white">Cardr</span>
+              <span className="font-semibold text-base sm:text-lg tracking-tight text-[#1D1D1F] dark:text-white">SBusinessCard</span>
               <span className="text-[10px] font-medium tracking-wide uppercase px-1.5 py-0.5 rounded-full bg-[#0071E3]/10 text-[#0071E3] dark:bg-[#0071E3]/20 dark:text-[#409CFF]">
                 Studio
               </span>
