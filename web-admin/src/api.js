@@ -86,9 +86,84 @@ export async function getPublicCard(slug) {
 export const getCardVcardUrl = (id) => `${API_BASE}/cards/${id}/vcard`;
 export const getPublicCardVcardUrl = (slug) => `${API_BASE}/c/${slug}/vcard`;
 export const getExportCsvUrl = () => `${API_BASE}/cards/export/csv`;
+export const getDbBackupUrl = () => `${API_BASE}/admin/db-backup`;
 export const getImageUrl = (path) => {
   if (!path) return "";
   if (path.startsWith("http")) return path;
   const host = typeof window !== "undefined" ? `${window.location.protocol}//${window.location.hostname}:8000` : "http://localhost:8000";
   return `${host}${path}`;
 };
+
+// --- Super Admin Control Panel API ---
+
+export async function fetchAdminOverview() {
+  const res = await fetch(`${API_BASE}/admin/overview`);
+  if (!res.ok) throw new Error("Failed to fetch admin overview");
+  return res.json();
+}
+
+export async function fetchAdminUsers() {
+  const res = await fetch(`${API_BASE}/admin/users`);
+  if (!res.ok) throw new Error("Failed to fetch users");
+  return res.json();
+}
+
+export async function createAdminUser(payload) {
+  const res = await fetch(`${API_BASE}/admin/users`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "Failed to create user");
+  return data;
+}
+
+export async function updateAdminUser(userId, payload) {
+  const res = await fetch(`${API_BASE}/admin/users/${userId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "Failed to update user");
+  return data;
+}
+
+export async function deleteAdminUser(userId) {
+  const res = await fetch(`${API_BASE}/admin/users/${userId}`, {
+    method: "DELETE",
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "Failed to delete user");
+  return data;
+}
+
+export async function fetchAdminConfig() {
+  const res = await fetch(`${API_BASE}/admin/config`);
+  if (!res.ok) throw new Error("Failed to fetch system config");
+  return res.json();
+}
+
+export async function updateAdminConfig(settings) {
+  const res = await fetch(`${API_BASE}/admin/config`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ settings }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "Failed to update config");
+  return data;
+}
+
+export async function testDatabaseConnections() {
+  const res = await fetch(`${API_BASE}/admin/db-test`, { method: "POST" });
+  if (!res.ok) throw new Error("Failed to test database connections");
+  return res.json();
+}
+
+export async function fetchPostgresSqlSchema() {
+  const res = await fetch(`${API_BASE}/admin/sql-schema`);
+  if (!res.ok) throw new Error("Failed to load SQL schema");
+  return res.json();
+}

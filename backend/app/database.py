@@ -17,29 +17,64 @@ def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # 1. Users Table for Multi-user Account Support
+    # 1. Users Table for Multi-user Account & Role Management (RBAC)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         email TEXT UNIQUE NOT NULL COLLATE NOCASE,
         password_hash TEXT NOT NULL,
         full_name TEXT NOT NULL,
+        role TEXT DEFAULT 'user',
+        status TEXT DEFAULT 'active',
         avatar_url TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
-    
+
+    # Migrate role & status columns if missing on existing users table
+    cursor.execute("PRAGMA table_info(users)")
+    user_cols = [row["name"] for row in cursor.fetchall()]
+    if "role" not in user_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'")
+        cursor.execute("UPDATE users SET role = 'super_admin' WHERE id = 1")
+    if "status" not in user_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'active'")
+
     # Seed default user if none exists
     cursor.execute("SELECT COUNT(*) FROM users")
     if cursor.fetchone()[0] == 0:
-        # Import auth_service hash function
         from app.auth_service import hash_password
         default_pwd = hash_password("demo1234")
         cursor.execute("""
-        INSERT INTO users (email, password_hash, full_name)
-        VALUES (?, ?, ?)
-        """, ("demo@cardr.app", default_pwd, "Demo User"))
+        INSERT INTO users (email, password_hash, full_name, role, status)
+        VALUES (?, ?, ?, 'super_admin', 'active')
+        """, ("demo@cardr.app", default_pwd, "George (Super Admin)"))
+    else:
+        cursor.execute("UPDATE users SET role = 'super_admin' WHERE id = 1 AND (role IS NULL OR role = 'user')")
+
+    # 1b. System & Database Config Table (Managed via Web Admin)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS system_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    default_settings = {
+        "db_engine": "sqlite_plus_supabase_backup",
+        "supabase_url": os.environ.get("SUPABASE_URL", "https://gpqbdbsehgrkkftrqjvd.supabase.co"),
+        "custom_database_url": os.environ.get("DATABASE_URL", ""),
+        "auto_cloud_backup": "true",
+        "gemini_model": os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite"),
+        "ocr_fallback_enabled": "true",
+        "allow_public_registration": "true",
+        "default_user_role": "user",
+        "max_cards_free_tier": "500",
+    }
+    for k, v in default_settings.items():
+        cursor.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)", (k, str(v)))
     
     # 2. Scanned Business Cards
     cursor.execute("""

@@ -54,7 +54,7 @@ allowed_origins = [o.strip() for o in env_origins.split(",") if o.strip()] if en
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+)(:\d+)?$",
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.\d+\.\d+\.\d+)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -693,6 +693,7 @@ def download_card_vcard(card_id: int):
         headers={"Content-Disposition": f'attachment; filename="{safe_name}.vcf"'}
     )
 
+
 @app.get("/api/vcard/quick")
 def quick_vcard_download(
     full_name: Optional[str] = "Business Contact",
@@ -871,3 +872,405 @@ def download_public_card_vcard(slug: str):
         media_type="text/vcard",
         headers={"Content-Disposition": f'attachment; filename="{safe_name}.vcf"'}
     )
+
+# ==============================================================================
+# 6. SUPER ADMIN CONTROL PANEL API (Users, Roles/RBAC, Database & System Config)
+# ==============================================================================
+
+VALID_ROLES = {"super_admin", "admin", "pro_user", "user"}
+VALID_STATUSES = {"active", "suspended"}
+
+class AdminCreateUserRequest(BaseModel):
+    email: str
+    full_name: str
+    password: str
+    role: Optional[str] = "user"
+    status: Optional[str] = "active"
+
+class AdminUpdateUserRequest(BaseModel):
+    full_name: Optional[str] = None
+    email: Optional[str] = None
+    role: Optional[str] = None
+    status: Optional[str] = None
+    password: Optional[str] = None
+
+class AdminConfigUpdateRequest(BaseModel):
+    settings: Dict[str, Any]
+
+@app.get("/api/admin/overview")
+def admin_get_overview():
+    init_db()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT COUNT(*) FROM users")
+    total_users = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM users WHERE role IN ('super_admin', 'admin')")
+    total_admins = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM scanned_cards")
+    total_cards = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM digital_cards")
+    total_digital_cards = cursor.fetchone()[0]
+
+    cursor.execute("SELECT role, COUNT(*) as cnt FROM users GROUP BY role")
+    role_counts = {row["role"] or "user": row["cnt"] for row in cursor.fetchall()}
+
+    cursor.execute("SELECT key, value FROM system_settings")
+    settings = {row["key"]: row["value"] for row in cursor.fetchall()}
+
+    cursor.execute("""
+        SELECT u.id, u.email, u.full_name, u.role, u.status, u.created_at,
+               (SELECT COUNT(*) FROM scanned_cards sc WHERE sc.user_id = u.id) as cards_count
+        FROM users u
+        ORDER BY u.id DESC LIMIT 6
+    """)
+    recent_users = [dict(r) for r in cursor.fetchall()]
+
+    conn.close()
+
+    from app.database import DB_PATH
+    db_size_kb = round(os.path.getsize(DB_PATH) / 1024, 1) if os.path.exists(DB_PATH) else 0
+
+    uploads_size_kb = 0
+    if os.path.exists(UPLOADS_DIR):
+        for root, _, files in os.walk(UPLOADS_DIR):
+            for f in files:
+                fp = os.path.join(root, f)
+                if os.path.isfile(fp):
+                    uploads_size_kb += os.path.getsize(fp)
+    uploads_size_kb = round(uploads_size_kb / 1024, 1)
+
+    return {
+        "metrics": {
+            "total_users": total_users,
+            "total_admins": total_admins,
+            "total_cards": total_cards,
+            "total_digital_cards": total_digital_cards,
+            "db_size_kb": db_size_kb,
+            "uploads_size_kb": uploads_size_kb,
+            "gemini_configured": bool(os.environ.get("GEMINI_API_KEY", "").strip()),
+            "supabase_configured": bool(os.environ.get("SUPABASE_URL", "").strip()),
+        },
+        "role_counts": role_counts,
+        "settings": settings,
+        "recent_users": recent_users,
+    }
+
+@app.get("/api/admin/users")
+def admin_list_users():
+    init_db()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT u.id, u.email, u.full_name, u.role, u.status, u.avatar_url, u.created_at, u.updated_at,
+               (SELECT COUNT(*) FROM scanned_cards sc WHERE sc.user_id = u.id) as cards_count
+        FROM users u
+        ORDER BY u.id ASC
+    """)
+    users = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return {"users": users, "total": len(users)}
+
+@app.post("/api/admin/users")
+def admin_create_user(req: AdminCreateUserRequest):
+    init_db()
+    email = req.email.strip().lower()
+    full_name = req.full_name.strip()
+    role = req.role if req.role in VALID_ROLES else "user"
+    user_status = req.status if req.status in VALID_STATUSES else "active"
+
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Valid email is required.")
+    if len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
+    if not full_name:
+        raise HTTPException(status_code=400, detail="Full name is required.")
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM users WHERE email = ?", (email,))
+    if cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=409, detail="A user with this email already exists.")
+
+    pwd_hash = hash_password(req.password)
+    cursor.execute("""
+        INSERT INTO users (email, password_hash, full_name, role, status)
+        VALUES (?, ?, ?, ?, ?)
+    """, (email, pwd_hash, full_name, role, user_status))
+    conn.commit()
+    new_id = cursor.lastrowid
+    cursor.execute("""
+        SELECT id, email, full_name, role, status, created_at, 0 as cards_count
+        FROM users WHERE id = ?
+    """, (new_id,))
+    new_user = dict(cursor.fetchone())
+    conn.close()
+    return {"success": True, "user": new_user}
+
+@app.put("/api/admin/users/{user_id}")
+def admin_update_user(user_id: int, req: AdminUpdateUserRequest):
+    init_db()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+    existing = cursor.fetchone()
+    if not existing:
+        conn.close()
+        raise HTTPException(status_code=404, detail="User not found")
+
+    updates = []
+    params = []
+    if req.full_name is not None and req.full_name.strip():
+        updates.append("full_name = ?")
+        params.append(req.full_name.strip())
+    if req.email is not None and "@" in req.email:
+        updates.append("email = ?")
+        params.append(req.email.strip().lower())
+    if req.role is not None and req.role in VALID_ROLES:
+        updates.append("role = ?")
+        params.append(req.role)
+    if req.status is not None and req.status in VALID_STATUSES:
+        updates.append("status = ?")
+        params.append(req.status)
+    if req.password is not None and len(req.password.strip()) >= 6:
+        updates.append("password_hash = ?")
+        params.append(hash_password(req.password.strip()))
+
+    if updates:
+        updates.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(user_id)
+        cursor.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = ?", params)
+        conn.commit()
+
+    cursor.execute("""
+        SELECT u.id, u.email, u.full_name, u.role, u.status, u.created_at, u.updated_at,
+               (SELECT COUNT(*) FROM scanned_cards sc WHERE sc.user_id = u.id) as cards_count
+        FROM users u WHERE u.id = ?
+    """, (user_id,))
+    updated_user = dict(cursor.fetchone())
+    conn.close()
+    return {"success": True, "user": updated_user}
+
+@app.delete("/api/admin/users/{user_id}")
+def admin_delete_user(user_id: int):
+    if user_id == 1:
+        raise HTTPException(status_code=400, detail="Primary Super Admin account (ID #1) cannot be deleted.")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM scanned_cards WHERE user_id = ?", (user_id,))
+    cursor.execute("DELETE FROM digital_cards WHERE user_id = ?", (user_id,))
+    cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+    return {"success": True, "message": f"User #{user_id} and associated cards deleted."}
+
+@app.get("/api/admin/config")
+def admin_get_config():
+    init_db()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT key, value, updated_at FROM system_settings")
+    settings = {row["key"]: row["value"] for row in cursor.fetchall()}
+
+    cursor.execute("SELECT COUNT(*) FROM users")
+    users_cnt = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM scanned_cards")
+    cards_cnt = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM digital_cards")
+    digital_cnt = cursor.fetchone()[0]
+    conn.close()
+
+    from app.database import DB_PATH
+    return {
+        "settings": settings,
+        "database_info": {
+            "sqlite_path": DB_PATH,
+            "sqlite_size_kb": round(os.path.getsize(DB_PATH) / 1024, 1) if os.path.exists(DB_PATH) else 0,
+            "env_supabase_url": os.environ.get("SUPABASE_URL", ""),
+            "tables": {
+                "users": users_cnt,
+                "scanned_cards": cards_cnt,
+                "digital_cards": digital_cnt,
+            },
+        },
+    }
+
+@app.put("/api/admin/config")
+def admin_update_config(req: AdminConfigUpdateRequest):
+    init_db()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    for k, v in req.settings.items():
+        cursor.execute("""
+            INSERT INTO system_settings (key, value, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+        """, (str(k), str(v)))
+        if k == "gemini_model" and v:
+            os.environ["GEMINI_MODEL"] = str(v)
+        elif k == "supabase_url" and v:
+            os.environ["SUPABASE_URL"] = str(v)
+    conn.commit()
+    cursor.execute("SELECT key, value FROM system_settings")
+    updated_settings = {row["key"]: row["value"] for row in cursor.fetchall()}
+    conn.close()
+    return {"success": True, "settings": updated_settings}
+
+@app.post("/api/admin/db-test")
+def admin_test_database_connections():
+    import time
+    import urllib.request
+
+    results = {}
+
+    # 1. Test Local SQLite
+    t0 = time.time()
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM scanned_cards")
+        cnt = cur.fetchone()[0]
+        conn.close()
+        results["sqlite"] = {
+            "ok": True,
+            "latency_ms": round((time.time() - t0) * 1000, 1),
+            "message": f"Connected (WAL mode active • {cnt} cards)",
+        }
+    except Exception as e:
+        results["sqlite"] = {"ok": False, "latency_ms": 0, "message": str(e)}
+
+    # 2. Test Supabase Cloud Connection
+    sb_url = os.environ.get("SUPABASE_URL", "").strip()
+    sb_key = (os.environ.get("SUPABASE_SECRET_KEY") or os.environ.get("SUPABASE_PUBLISHABLE_KEY") or "").strip()
+    if sb_url and sb_key:
+        t1 = time.time()
+        try:
+            req = urllib.request.Request(
+                f"{sb_url}/rest/v1/",
+                headers={"apikey": sb_key, "Authorization": f"Bearer {sb_key}"},
+            )
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                results["supabase"] = {
+                    "ok": resp.status == 200,
+                    "latency_ms": round((time.time() - t1) * 1000, 1),
+                    "message": f"Online ({sb_url})",
+                }
+        except Exception as e:
+            results["supabase"] = {
+                "ok": False,
+                "latency_ms": round((time.time() - t1) * 1000, 1),
+                "message": f"Offline or table not initialized ({e})",
+            }
+    else:
+        results["supabase"] = {"ok": False, "latency_ms": 0, "message": "SUPABASE_URL or API key not set"}
+
+    return {"results": results}
+
+@app.get("/api/admin/db-backup")
+def admin_download_db_backup():
+    init_db()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT id, email, full_name, role, status, avatar_url, created_at, updated_at FROM users")
+    users = [dict(r) for r in cursor.fetchall()]
+
+    cursor.execute("SELECT * FROM scanned_cards")
+    cards = [dict(r) for r in cursor.fetchall()]
+
+    cursor.execute("SELECT * FROM digital_cards")
+    digital_cards = [dict(r) for r in cursor.fetchall()]
+
+    cursor.execute("SELECT key, value, updated_at FROM system_settings")
+    settings = {r["key"]: r["value"] for r in cursor.fetchall()}
+    conn.close()
+
+    payload = {
+        "app": "SBusinessCard Platform",
+        "exported_at": io.StringIO().getvalue() or "2026-11-19",
+        "counts": {
+            "users": len(users),
+            "scanned_cards": len(cards),
+            "digital_cards": len(digital_cards),
+        },
+        "system_settings": settings,
+        "users": users,
+        "scanned_cards": cards,
+        "digital_cards": digital_cards,
+    }
+    json_bytes = json.dumps(payload, indent=2).encode("utf-8")
+    return Response(
+        content=json_bytes,
+        media_type="application/json",
+        headers={"Content-Disposition": 'attachment; filename="sbusinesscard_full_db_backup.json"'},
+    )
+
+@app.get("/api/admin/sql-schema")
+def admin_get_postgres_migration_sql():
+    sql = """-- =====================================================================
+-- SBusinessCard Platform: PostgreSQL / Supabase Cloud Database Schema
+-- Copy & run this in Supabase SQL Editor or any PostgreSQL server
+-- =====================================================================
+
+CREATE TABLE IF NOT EXISTS public.users (
+    id BIGSERIAL PRIMARY KEY,
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    full_name TEXT NOT NULL,
+    role TEXT DEFAULT 'user' CHECK (role IN ('super_admin', 'admin', 'pro_user', 'user')),
+    status TEXT DEFAULT 'active' CHECK (status IN ('active', 'suspended')),
+    avatar_url TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.scanned_cards (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT DEFAULT 1,
+    full_name TEXT,
+    job_title TEXT,
+    company TEXT,
+    phone TEXT,
+    email TEXT,
+    website TEXT,
+    address TEXT,
+    notes TEXT,
+    tags TEXT,
+    raw_text TEXT,
+    image_url TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.digital_cards (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT DEFAULT 1,
+    slug TEXT UNIQUE NOT NULL,
+    full_name TEXT NOT NULL,
+    job_title TEXT,
+    company TEXT,
+    headline TEXT,
+    bio TEXT,
+    theme TEXT DEFAULT 'apple_dark',
+    avatar_url TEXT,
+    banner_url TEXT,
+    badge_text TEXT,
+    phone TEXT,
+    email TEXT,
+    website TEXT,
+    address TEXT,
+    social_links JSONB DEFAULT '{}'::jsonb,
+    custom_buttons JSONB DEFAULT '[]'::jsonb,
+    qr_code_url TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_scanned_cards_user_id ON public.scanned_cards(user_id);
+CREATE INDEX IF NOT EXISTS idx_scanned_cards_email ON public.scanned_cards(email);
+"""
+    return {"sql": sql}

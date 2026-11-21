@@ -1,18 +1,16 @@
 import React, { useState, useEffect } from "react";
 import Navigation from "./components/Navigation";
+import AdminOverview from "./components/AdminOverview";
+import UserRoleManagement from "./components/UserRoleManagement";
+import DatabaseConfig from "./components/DatabaseConfig";
 import CardsVault from "./components/CardsVault";
-import CardDesigner from "./components/CardDesigner";
-import QuickScanner from "./components/QuickScanner";
-import ShareModal from "./components/ShareModal";
 import PublicCardView from "./components/PublicCardView";
-import { fetchDigitalCard, fetchScannedCards } from "./api";
+import { fetchScannedCards } from "./api";
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState("vault"); // 'vault' | 'studio' | 'scanner' | 'share'
-  const [darkMode, setDarkMode] = useState(false);
-  const [digitalCard, setDigitalCard] = useState(null);
+  const [activeTab, setActiveTab] = useState("overview"); // 'overview' | 'users' | 'database' | 'vault'
+  const [darkMode, setDarkMode] = useState(true);
   const [cards, setCards] = useState([]);
-  const [loading, setLoading] = useState(true);
 
   // Check if viewing a public card directly (e.g. /c/alex-morgan)
   const pathname = window.location.pathname;
@@ -31,16 +29,10 @@ export default function App() {
   // Load initial data
   const loadData = async () => {
     try {
-      const [digRes, cardsRes] = await Promise.all([
-        fetchDigitalCard().catch(() => ({ card: null })),
-        fetchScannedCards().catch(() => ({ cards: [] })),
-      ]);
-      setDigitalCard(digRes.card);
+      const cardsRes = await fetchScannedCards().catch(() => ({ cards: [] }));
       setCards(cardsRes.cards || []);
     } catch (err) {
       console.error("Failed to load initial data", err);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -65,6 +57,14 @@ export default function App() {
       />
 
       <main className="pb-[max(4rem,calc(2.5rem+env(safe-area-inset-bottom,0px)))] animate-in fade-in duration-200">
+        {activeTab === "overview" && (
+          <AdminOverview onNavigate={(tab) => setActiveTab(tab)} />
+        )}
+
+        {activeTab === "users" && <UserRoleManagement />}
+
+        {activeTab === "database" && <DatabaseConfig />}
+
         {activeTab === "vault" && (
           <CardsVault
             cards={cards}
@@ -72,24 +72,6 @@ export default function App() {
             onSelectCard={() => {}}
           />
         )}
-
-        {activeTab === "studio" && (
-          <CardDesigner
-            initialCard={digitalCard}
-            onCardUpdated={(updated) => setDigitalCard(updated)}
-          />
-        )}
-
-        {activeTab === "scanner" && (
-          <QuickScanner
-            onCardSaved={() => {
-              loadData();
-              setActiveTab("vault");
-            }}
-          />
-        )}
-
-        {activeTab === "share" && <ShareModal card={digitalCard} />}
       </main>
     </div>
   );
