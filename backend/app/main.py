@@ -9,11 +9,11 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env
 load_dotenv()
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Query, Response, status, Depends, BackgroundTasks, Header
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Query, Response, status, Depends, BackgroundTasks, Header, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse, HTMLResponse
 from pydantic import BaseModel, Field, ConfigDict
 from PIL import Image
 
@@ -22,6 +22,7 @@ from app.ocr_service import process_card_image
 from app.vcard_service import generate_vcard_content
 from app.qr_service import generate_qr_code_image
 from app.ai_vision_service import extract_card_with_gemini, generate_followup_message
+from app.public_card_html import render_public_card_html
 from app.auth_service import (
     hash_password,
     verify_password,
@@ -961,9 +962,25 @@ def update_user_digital_card(
     updated["custom_buttons"] = json.loads(updated["custom_buttons"]) if updated.get("custom_buttons") else []
     return {"success": True, "card": updated}
 
+def resolve_public_base_url(request: Optional[Request] = None) -> str:
+    env_base = os.getenv("PUBLIC_URL") or os.getenv("PUBLIC_WEB_URL") or os.getenv("CLOUDFLARE_URL")
+    if env_base and not ("localhost" in env_base or "127.0.0.1" in env_base):
+        return env_base.rstrip("/")
+    if request:
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+        proto = request.headers.get("x-forwarded-proto", "https")
+        if host:
+            if "trycloudflare.com" in host:
+                return f"https://{host}".rstrip("/")
+            if not ("localhost" in host or "127.0.0.1" in host):
+                return f"{proto}://{host}".rstrip("/")
+    return "https://entrepreneur-wrist-nodes-mitsubishi.trycloudflare.com"
+
 @app.get("/api/digital-card/qr")
 def get_digital_card_qr(
     slug: Optional[str] = None,
+    direct: Optional[bool] = False,
+    request: Request = None,
     current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)
 ):
     conn = get_db_connection()
@@ -981,11 +998,48 @@ def get_digital_card_qr(
         raise HTTPException(status_code=404, detail="Card not found")
         
     target_slug = row["slug"]
-    public_url = f"http://localhost:5173/c/{target_slug}"
+    base_url = resolve_public_base_url(request)
+    
+    # Clean, low-density QR code URLs
+    public_url = f"{base_url}/c/{target_slug}"
+    vcard_url = f"{base_url}/c/{target_slug}/vcard"
+    auto_url = f"{base_url}/c/{target_slug}?auto=1"
+    
+    # Generate sparse, ultra-crisp Apple-style QR codes (small payload = large scannable blocks)
     qr_data_uri = generate_qr_code_image(public_url)
-    return {"slug": target_slug, "url": public_url, "qr_data_uri": qr_data_uri}
+    vcard_qr_data_uri = generate_qr_code_image(vcard_url)
+    auto_qr_data_uri = generate_qr_code_image(auto_url)
+    
+    return {
+        "slug": target_slug,
+        "url": public_url,
+        "vcard_url": vcard_url,
+        "auto_url": auto_url,
+        "qr_data_uri": qr_data_uri,
+        "vcard_qr_data_uri": vcard_qr_data_uri,
+        "auto_qr_data_uri": auto_qr_data_uri
+    }
 
-# 5. Public Card View (when a contact scans your QR code)
+# 5. Public Card View (when a contact scans your conference QR code)
+@app.get("/c/{slug}", response_class=HTMLResponse)
+def public_card_html_view(slug: str, auto: Optional[int] = 0, download: Optional[int] = 0):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM digital_cards WHERE slug = ?", (slug,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Digital business card not found")
+        
+    card_dict = dict(row)
+    should_auto = bool(auto or download)
+    html_content = render_public_card_html(card_dict, auto_download=should_auto)
+    return HTMLResponse(content=html_content, status_code=200)
+
+@app.get("/c/{slug}/vcard")
+def download_public_vcard_shortcut(slug: str):
+    return download_public_card_vcard(slug)
+
 @app.get("/api/c/{slug}")
 def get_public_card(slug: str):
     conn = get_db_connection()
