@@ -1259,8 +1259,12 @@ def admin_update_config(req: AdminConfigUpdateRequest):
         """, (str(k), str(v)))
         if k == "gemini_model" and v:
             os.environ["GEMINI_MODEL"] = str(v)
+        elif k == "gemini_api_key" and v:
+            os.environ["GEMINI_API_KEY"] = str(v)
         elif k == "supabase_url" and v:
             os.environ["SUPABASE_URL"] = str(v)
+        elif k == "custom_database_url" and v:
+            os.environ["DATABASE_URL"] = str(v)
     conn.commit()
     cursor.execute("SELECT key, value FROM system_settings")
     updated_settings = {row["key"]: row["value"] for row in cursor.fetchall()}

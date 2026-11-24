@@ -67,12 +67,29 @@ def preprocess_card_image(image_input, max_dimension: int = 1600) -> Image.Image
         
     return image
 
+def _get_setting(key: str, env_fallback: str, default: str = "") -> str:
+    """Read configuration from system_settings DB table first, falling back to os.environ."""
+    try:
+        from app.database import get_db_connection
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM system_settings WHERE key = ?", (key,))
+        row = cur.fetchone()
+        conn.close()
+        if row and row["value"]:
+            val = str(row["value"]).strip()
+            if val:
+                return val
+    except Exception:
+        pass
+    return os.environ.get(env_fallback, default).strip()
+
 def extract_card_with_gemini(image_input) -> Optional[Dict[str, Any]]:
     """
     Extract business card details using Google Gemini Multimodal Vision AI with waterfall fallback.
     Returns parsed dictionary if successful, or None if API key missing or error occurs.
     """
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    api_key = _get_setting("gemini_api_key", "GEMINI_API_KEY", "")
     if not api_key:
         logger.info("GEMINI_API_KEY is not set. Falling back to local OCR.")
         return None
@@ -84,7 +101,7 @@ def extract_card_with_gemini(image_input) -> Optional[Dict[str, Any]]:
         client = genai.Client(api_key=api_key)
         processed_image = preprocess_card_image(image_input)
 
-        preferred_model = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
+        preferred_model = _get_setting("gemini_model", "GEMINI_MODEL", "gemini-3.5-flash-lite")
         models_to_try = [preferred_model] + [m for m in CASCADE_MODELS if m != preferred_model]
 
         config = types.GenerateContentConfig(
@@ -161,14 +178,14 @@ def generate_followup_message(card: Dict[str, Any], context: Optional[str] = "")
     """
     Generates a professional, personalized networking follow-up message using Gemini.
     """
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    api_key = _get_setting("gemini_api_key", "GEMINI_API_KEY", "")
     if not api_key:
         return None
 
     try:
         from google import genai
         client = genai.Client(api_key=api_key)
-        preferred_model = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
+        preferred_model = _get_setting("gemini_model", "GEMINI_MODEL", "gemini-3.5-flash-lite")
 
         clean_ctx = str(context or "").strip()
         prompt = f"""Draft a warm, professional, high-impact follow-up networking email to a contact I recently met.
