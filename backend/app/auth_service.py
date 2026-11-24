@@ -38,15 +38,17 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     except Exception:
         return False
 
-def create_access_token(user_id: int, email: str, full_name: str) -> str:
+def create_access_token(user_id: Any, email: str, full_name: str, role: str = "user") -> str:
     """Create signed JWT access token."""
     now = datetime.now(timezone.utc)
     expire = now + timedelta(days=ACCESS_TOKEN_EXPIRE_DAYS)
+    uid = int(user_id) if user_id is not None else 1
     payload = {
-        "sub": str(user_id),
-        "user_id": user_id,
+        "sub": str(uid),
+        "user_id": uid,
         "email": email,
         "full_name": full_name,
+        "role": role,
         "iat": now,
         "exp": expire,
     }
@@ -63,6 +65,7 @@ def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
 def get_current_user_optional(authorization: Optional[str] = Header(None)) -> Optional[Dict[str, Any]]:
     """
     Extracts user info from Authorization: Bearer <token> header if provided.
+    Also validates that the account is not suspended in the database.
     Does not reject unauthenticated requests (returns None).
     """
     if not authorization:
@@ -71,7 +74,33 @@ def get_current_user_optional(authorization: Optional[str] = Header(None)) -> Op
         parts = authorization.split()
         if len(parts) == 2 and parts[0].lower() == "bearer":
             token = parts[1]
-            return decode_access_token(token)
+            payload = decode_access_token(token)
+            if payload and "user_id" in payload:
+                # Fetch fresh role & status from database
+                try:
+                    import sqlite3
+                    db_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "business_contact.db")
+                    conn = sqlite3.connect(db_path, timeout=5.0)
+                    conn.row_factory = sqlite3.Row
+                    cur = conn.cursor()
+                    cur.execute("SELECT role, status FROM users WHERE id = ?", (payload["user_id"],))
+                    row = cur.fetchone()
+                    conn.close()
+                    if row:
+                        payload["role"] = row["role"] or payload.get("role", "user")
+                        payload["status"] = row["status"] or "active"
+                        if payload["status"] == "suspended":
+                            raise HTTPException(
+                                status_code=status.HTTP_403_FORBIDDEN,
+                                detail="Your account has been suspended by an administrator."
+                            )
+                except HTTPException:
+                    raise
+                except Exception:
+                    pass
+                return payload
+    except HTTPException:
+        raise
     except Exception:
         pass
     return None

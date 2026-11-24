@@ -150,8 +150,8 @@ export default function AdminOverview({ onNavigate }) {
             {settings.db_engine === "supabase_cloud"
               ? "Supabase PostgreSQL"
               : settings.db_engine === "custom_postgres"
-              ? "Enterprise PostgreSQL"
-              : "Local-First + Supabase Sync"}
+                ? "Enterprise PostgreSQL"
+                : "Local-First + Supabase Sync"}
           </div>
           <div className="text-xs text-[#86868B] mt-1">
             DB: {m.db_size_kb ?? 0} KB • Media: {m.uploads_size_kb ?? 0} KB
@@ -281,9 +281,8 @@ export default function AdminOverview({ onNavigate }) {
                         </td>
                         <td className="py-2.5 px-3">
                           <span
-                            className={`inline-flex items-center gap-1 text-[11px] font-semibold ${
-                              u.status === "suspended" ? "text-rose-500" : "text-emerald-500"
-                            }`}
+                            className={`inline-flex items-center gap-1 text-[11px] font-semibold ${u.status === "suspended" ? "text-rose-500" : "text-emerald-500"
+                              }`}
                           >
                             ● {u.status === "suspended" ? "Suspended" : "Active"}
                           </span>

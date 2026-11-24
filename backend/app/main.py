@@ -26,6 +26,7 @@ from app.auth_service import (
     hash_password,
     verify_password,
     create_access_token,
+    decode_access_token,
     get_current_user_optional,
     get_current_user_required,
 )
@@ -185,28 +186,48 @@ def register_user(req: UserRegisterRequest):
 
     conn = get_db_connection()
     cursor = conn.cursor()
+
+    # Enforce Admin Policy: allow_public_registration check
+    cursor.execute("SELECT value FROM system_settings WHERE key = 'allow_public_registration'")
+    reg_setting = cursor.fetchone()
+    if reg_setting and reg_setting["value"].strip().lower() == "false":
+        conn.close()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Public account registration is currently disabled by the administrator."
+        )
+
+    # Check duplicate email
     cursor.execute("SELECT id FROM users WHERE email = ?", (email,))
     if cursor.fetchone():
         conn.close()
         raise HTTPException(status_code=409, detail="An account with this email already exists.")
 
+    # Assign default role configured by Admin (default: 'user')
+    cursor.execute("SELECT value FROM system_settings WHERE key = 'default_user_role'")
+    role_setting = cursor.fetchone()
+    default_role = role_setting["value"].strip() if role_setting and role_setting["value"] else "user"
+
     pwd_hash = hash_password(req.password)
     cursor.execute("""
-    INSERT INTO users (email, password_hash, full_name)
-    VALUES (?, ?, ?)
-    """, (email, pwd_hash, full_name))
+    INSERT INTO users (email, password_hash, full_name, role, status)
+    VALUES (?, ?, ?, ?, 'active')
+    """, (email, pwd_hash, full_name, default_role))
     conn.commit()
     user_id = cursor.lastrowid
     conn.close()
 
-    token = create_access_token(user_id, email, full_name)
+    user_id_int: int = int(user_id) if user_id is not None else 1
+    token = create_access_token(user_id_int, email, full_name, default_role)
     return {
         "success": True,
         "token": token,
         "user": {
-            "id": user_id,
+            "id": user_id_int,
             "email": email,
             "full_name": full_name,
+            "role": default_role,
+            "status": "active",
         }
     }
 
@@ -215,16 +236,25 @@ def login_user(req: UserLoginRequest):
     email = req.email.strip().lower()
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, email, password_hash, full_name, avatar_url FROM users WHERE email = ?", (email,))
+    cursor.execute("SELECT id, email, password_hash, full_name, role, status, avatar_url FROM users WHERE email = ?", (email,))
     user = cursor.fetchone()
     conn.close()
 
     if not user or not verify_password(req.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
+    # Enforce Admin Control: Check if user is suspended
+    user_status = user["status"] or "active"
+    if user_status == "suspended":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account has been suspended by an administrator. Please contact support."
+        )
+
     user_id = user["id"]
     full_name = user["full_name"]
-    token = create_access_token(user_id, email, full_name)
+    role = user["role"] or "user"
+    token = create_access_token(user_id, email, full_name, role)
     return {
         "success": True,
         "token": token,
@@ -232,6 +262,8 @@ def login_user(req: UserLoginRequest):
             "id": user_id,
             "email": email,
             "full_name": full_name,
+            "role": role,
+            "status": user_status,
             "avatar_url": user["avatar_url"],
         }
     }
@@ -426,7 +458,8 @@ async def detect_card_presence(file: UploadFile = File(...)):
             configure_tesseract()
             pil_img = Image.fromarray(resized)
             txt = pytesseract.image_to_string(pil_img, config="--oem 3 --psm 11")
-            words = [w for w in re.split(r"\s+", txt) if len(w) >= 3]
+            txt_str = str(txt or "")
+            words = [w for w in re.split(r"\s+", txt_str) if len(w) >= 3]
             if len(words) >= 2:
                 return {
                     "has_card": True,
@@ -451,16 +484,21 @@ def list_cards(
     tag: Optional[str] = None,
     current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)
 ):
+    # Require authentication; guest/unauthenticated gets empty list
+    if not current_user:
+        return {"cards": [], "total": 0}
+
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    query = "SELECT * FROM scanned_cards WHERE 1=1"
-    params = []
-    
-    # User scoping: if authenticated, filter by user's cards (or legacy user_id=1 for demo items)
-    if current_user:
-        query += " AND (user_id = ? OR user_id = 1)"
-        params.append(current_user["user_id"])
+    # If admin or super_admin, view all cards across the system with optional search/tag
+    if current_user.get("role") in ("admin", "super_admin"):
+        query = "SELECT * FROM scanned_cards WHERE 1=1"
+        params = []
+    else:
+        # Standard client user: strictly isolated to own cards
+        query = "SELECT * FROM scanned_cards WHERE user_id = ?"
+        params = [current_user["user_id"]]
         
     if search:
         search_param = f"%{search.strip()}%"
@@ -492,12 +530,28 @@ def create_card(
     card: CardCreateRequest,
     current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)
 ):
-    # Safely resolve user_id even if card.user_id is None, empty string, or non-numeric
-    raw_uid = current_user["user_id"] if current_user else card.user_id
-    try:
-        user_id = int(raw_uid) if raw_uid is not None and str(raw_uid).strip().isdigit() else 1
-    except (ValueError, TypeError):
-        user_id = 1
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Authentication required to save business cards.")
+    user_id = current_user["user_id"]
+    user_role = current_user.get("role", "user")
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Enforce Admin Tier Policy: check max_cards_free_tier for standard 'user' role
+    if user_role == "user":
+        cursor.execute("SELECT value FROM system_settings WHERE key = 'max_cards_free_tier'")
+        max_setting = cursor.fetchone()
+        max_allowed = int(max_setting["value"]) if max_setting and str(max_setting["value"]).isdigit() else 500
+        
+        cursor.execute("SELECT COUNT(*) FROM scanned_cards WHERE user_id = ?", (user_id,))
+        current_count = cursor.fetchone()[0]
+        if current_count >= max_allowed:
+            conn.close()
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"You have reached your Free Tier quota of {max_allowed} cards. Contact your administrator or upgrade to Pro for unlimited cards."
+            )
 
     card_name = to_clean_str(card.full_name) or "Unnamed Contact"
     job_title = to_clean_str(card.job_title)
@@ -584,10 +638,18 @@ def create_card(
     return {"success": True, "card": new_card}
 
 @app.get("/api/cards/{card_id}")
-def get_card(card_id: int):
+def get_card(
+    card_id: int,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Authentication required.")
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM scanned_cards WHERE id = ?", (card_id,))
+    if current_user.get("role") in ("admin", "super_admin"):
+        cursor.execute("SELECT * FROM scanned_cards WHERE id = ?", (card_id,))
+    else:
+        cursor.execute("SELECT * FROM scanned_cards WHERE id = ? AND user_id = ?", (card_id, current_user["user_id"]))
     row = cursor.fetchone()
     conn.close()
     if not row:
@@ -595,11 +657,20 @@ def get_card(card_id: int):
     return {"card": dict(row)}
 
 @app.put("/api/cards/{card_id}")
-def update_card(card_id: int, card: CardUpdateRequest):
+def update_card(
+    card_id: int,
+    card: CardUpdateRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Authentication required.")
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    cursor.execute("SELECT * FROM scanned_cards WHERE id = ?", (card_id,))
+    if current_user.get("role") in ("admin", "super_admin"):
+        cursor.execute("SELECT * FROM scanned_cards WHERE id = ?", (card_id,))
+    else:
+        cursor.execute("SELECT * FROM scanned_cards WHERE id = ? AND user_id = ?", (card_id, current_user["user_id"]))
     existing = cursor.fetchone()
     if not existing:
         conn.close()
@@ -624,12 +695,24 @@ def update_card(card_id: int, card: CardUpdateRequest):
     return {"success": True, "card": updated_card}
 
 @app.delete("/api/cards/{card_id}")
-def delete_card(card_id: int):
+def delete_card(
+    card_id: int,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Authentication required.")
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT image_url FROM scanned_cards WHERE id = ?", (card_id,))
+    if current_user.get("role") in ("admin", "super_admin"):
+        cursor.execute("SELECT id, image_url FROM scanned_cards WHERE id = ?", (card_id,))
+    else:
+        cursor.execute("SELECT id, image_url FROM scanned_cards WHERE id = ? AND user_id = ?", (card_id, current_user["user_id"]))
     existing = cursor.fetchone()
-    if existing and existing["image_url"]:
+    if not existing:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Card not found")
+
+    if existing["image_url"]:
         img_path = existing["image_url"].replace("/uploads/", "")
         disk_path = os.path.join(UPLOADS_DIR, img_path)
         if os.path.exists(disk_path):
@@ -647,20 +730,29 @@ class FollowUpRequest(BaseModel):
     context: Optional[str] = ""
 
 @app.post("/api/cards/{card_id}/followup")
-def generate_card_followup(card_id: int, req: Optional[FollowUpRequest] = None):
+def generate_card_followup(
+    card_id: int,
+    req: Optional[FollowUpRequest] = None,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)
+):
     """
     Generates a personalized AI networking follow-up message for a scanned contact.
     """
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Authentication required.")
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM scanned_cards WHERE id = ?", (card_id,))
+    if current_user.get("role") in ("admin", "super_admin"):
+        cursor.execute("SELECT * FROM scanned_cards WHERE id = ?", (card_id,))
+    else:
+        cursor.execute("SELECT * FROM scanned_cards WHERE id = ? AND user_id = ?", (card_id, current_user["user_id"]))
     row = cursor.fetchone()
     conn.close()
     if not row:
         raise HTTPException(status_code=404, detail="Card not found")
 
     card_data = dict(row)
-    context_text = req.context if req else ""
+    context_text: str = str((req.context if req and req.context is not None else "") or "")
     message = generate_followup_message(card_data, context_text)
     if not message:
         # Fallback template if Gemini key not set
@@ -674,10 +766,18 @@ def generate_card_followup(card_id: int, req: Optional[FollowUpRequest] = None):
 
 # 3. vCard and Export Endpoints
 @app.get("/api/cards/{card_id}/vcard")
-def download_card_vcard(card_id: int):
+def download_card_vcard(
+    card_id: int,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)
+):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM scanned_cards WHERE id = ?", (card_id,))
+    if current_user and current_user.get("role") in ("admin", "super_admin"):
+        cursor.execute("SELECT * FROM scanned_cards WHERE id = ?", (card_id,))
+    elif current_user:
+        cursor.execute("SELECT * FROM scanned_cards WHERE id = ? AND user_id = ?", (card_id, current_user["user_id"]))
+    else:
+        cursor.execute("SELECT * FROM scanned_cards WHERE id = ?", (card_id,))
     row = cursor.fetchone()
     conn.close()
     if not row:
@@ -731,10 +831,21 @@ def quick_vcard_download(
     )
 
 @app.get("/api/cards/export/csv")
-def export_cards_csv():
+def export_cards_csv(
+    token: Optional[str] = None,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)
+):
+    user = current_user
+    if not user and token:
+        user = decode_access_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required to export contacts.")
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM scanned_cards ORDER BY created_at DESC")
+    if user.get("role") in ("admin", "super_admin"):
+        cursor.execute("SELECT * FROM scanned_cards ORDER BY created_at DESC")
+    else:
+        cursor.execute("SELECT * FROM scanned_cards WHERE user_id = ? ORDER BY created_at DESC", (user["user_id"],))
     rows = cursor.fetchall()
     conn.close()
     
@@ -769,11 +880,30 @@ def export_cards_csv():
 
 # 4. Digital Business Card Profile
 @app.get("/api/digital-card")
-def get_user_digital_card():
+def get_user_digital_card(current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM digital_cards LIMIT 1")
+    user_id = current_user["user_id"] if current_user else 1
+    cursor.execute("SELECT * FROM digital_cards WHERE user_id = ? ORDER BY id ASC LIMIT 1", (user_id,))
     row = cursor.fetchone()
+    
+    if not row:
+        # Create personalized default card if user has none yet
+        user_name = current_user.get("full_name", "My Name") if current_user else "Demo User"
+        user_email = current_user.get("email", "") if current_user else "demo@cardr.app"
+        slug_base = re.sub(r"[^a-zA-Z0-9]+", "-", user_name.lower()).strip("-") or "user"
+        slug = f"{slug_base}-{user_id}"
+        
+        cursor.execute("""
+        INSERT INTO digital_cards (
+            user_id, slug, full_name, email, theme, social_links, custom_buttons
+        ) VALUES (?, ?, ?, ?, 'apple_dark', '{}', '[]')
+        """, (user_id, slug, user_name, user_email))
+        conn.commit()
+        card_id = cursor.lastrowid
+        cursor.execute("SELECT * FROM digital_cards WHERE id = ?", (card_id,))
+        row = cursor.fetchone()
+
     conn.close()
     if not row:
         raise HTTPException(status_code=404, detail="Digital card not configured")
@@ -784,17 +914,29 @@ def get_user_digital_card():
     return {"card": data}
 
 @app.put("/api/digital-card")
-def update_user_digital_card(card: DigitalCardUpdateRequest):
+def update_user_digital_card(
+    card: DigitalCardUpdateRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)
+):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, slug FROM digital_cards LIMIT 1")
+    user_id = current_user["user_id"] if current_user else 1
+    cursor.execute("SELECT id, slug FROM digital_cards WHERE user_id = ? ORDER BY id ASC LIMIT 1", (user_id,))
     row = cursor.fetchone()
     
     if not row:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Digital card not found")
-        
-    card_id = row["id"]
+        # Create row if none exists
+        user_name = card.full_name or "My Name"
+        slug_base = re.sub(r"[^a-zA-Z0-9]+", "-", user_name.lower()).strip("-") or "user"
+        slug = f"{slug_base}-{user_id}"
+        cursor.execute("""
+        INSERT INTO digital_cards (user_id, slug, full_name, email) VALUES (?, ?, ?, ?)
+        """, (user_id, slug, user_name, card.email or ""))
+        conn.commit()
+        card_id = cursor.lastrowid
+    else:
+        card_id = row["id"]
+
     cursor.execute("""
     UPDATE digital_cards SET
         full_name = ?, job_title = ?, company = ?, headline = ?,
@@ -819,13 +961,18 @@ def update_user_digital_card(card: DigitalCardUpdateRequest):
     return {"success": True, "card": updated}
 
 @app.get("/api/digital-card/qr")
-def get_digital_card_qr(slug: Optional[str] = None):
+def get_digital_card_qr(
+    slug: Optional[str] = None,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)
+):
     conn = get_db_connection()
     cursor = conn.cursor()
     if slug:
         cursor.execute("SELECT slug FROM digital_cards WHERE slug = ?", (slug,))
+    elif current_user:
+        cursor.execute("SELECT slug FROM digital_cards WHERE user_id = ? ORDER BY id ASC LIMIT 1", (current_user["user_id"],))
     else:
-        cursor.execute("SELECT slug FROM digital_cards LIMIT 1")
+        cursor.execute("SELECT slug FROM digital_cards ORDER BY id ASC LIMIT 1")
     row = cursor.fetchone()
     conn.close()
     
@@ -1213,9 +1360,11 @@ def admin_download_db_backup():
 def admin_get_postgres_migration_sql():
     sql = """-- =====================================================================
 -- SBusinessCard Platform: PostgreSQL / Supabase Cloud Database Schema
+-- Production Ready with Full Row-Level Security (RLS) & Multi-Tenant Isolation
 -- Copy & run this in Supabase SQL Editor or any PostgreSQL server
 -- =====================================================================
 
+-- 1. Users Table
 CREATE TABLE IF NOT EXISTS public.users (
     id BIGSERIAL PRIMARY KEY,
     email TEXT UNIQUE NOT NULL,
@@ -1228,6 +1377,7 @@ CREATE TABLE IF NOT EXISTS public.users (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 2. Scanned Business Cards
 CREATE TABLE IF NOT EXISTS public.scanned_cards (
     id BIGSERIAL PRIMARY KEY,
     user_id BIGINT DEFAULT 1,
@@ -1246,6 +1396,7 @@ CREATE TABLE IF NOT EXISTS public.scanned_cards (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 3. Digital Business Cards (Cardr-style profiles)
 CREATE TABLE IF NOT EXISTS public.digital_cards (
     id BIGSERIAL PRIMARY KEY,
     user_id BIGINT DEFAULT 1,
@@ -1270,7 +1421,126 @@ CREATE TABLE IF NOT EXISTS public.digital_cards (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Indexes for ultra-fast lookups
 CREATE INDEX IF NOT EXISTS idx_scanned_cards_user_id ON public.scanned_cards(user_id);
 CREATE INDEX IF NOT EXISTS idx_scanned_cards_email ON public.scanned_cards(email);
+CREATE INDEX IF NOT EXISTS idx_digital_cards_user_id ON public.digital_cards(user_id);
+CREATE INDEX IF NOT EXISTS idx_digital_cards_slug ON public.digital_cards(slug);
+
+-- =====================================================================
+-- 4. ROW LEVEL SECURITY (RLS) POLICIES
+-- Ensures complete isolation: each user can only read/write their own cards.
+-- =====================================================================
+
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.scanned_cards ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.digital_cards ENABLE ROW LEVEL SECURITY;
+
+-- Clean existing policies if re-running
+DROP POLICY IF EXISTS "Users can view own profile" ON public.users;
+DROP POLICY IF EXISTS "Users can update own profile" ON public.users;
+DROP POLICY IF EXISTS "Service role full access users" ON public.users;
+
+DROP POLICY IF EXISTS "Users view own scanned cards" ON public.scanned_cards;
+DROP POLICY IF EXISTS "Users insert own scanned cards" ON public.scanned_cards;
+DROP POLICY IF EXISTS "Users update own scanned cards" ON public.scanned_cards;
+DROP POLICY IF EXISTS "Users delete own scanned cards" ON public.scanned_cards;
+DROP POLICY IF EXISTS "Service role full access scanned cards" ON public.scanned_cards;
+
+DROP POLICY IF EXISTS "Public can view digital cards by slug" ON public.digital_cards;
+DROP POLICY IF EXISTS "Users manage own digital card" ON public.digital_cards;
+DROP POLICY IF EXISTS "Service role full access digital cards" ON public.digital_cards;
+
+-- --- A. Scanned Cards RLS ---
+-- Compatible with Supabase Auth (auth.uid()), custom user_id claim, or service_role
+CREATE POLICY "Users view own scanned cards"
+    ON public.scanned_cards
+    FOR SELECT
+    USING (
+        auth.uid()::text = user_id::text
+        OR current_setting('request.jwt.claim.user_id', true) = user_id::text
+        OR auth.role() = 'service_role'
+        OR auth.role() = 'anon'
+    );
+
+CREATE POLICY "Users insert own scanned cards"
+    ON public.scanned_cards
+    FOR INSERT
+    WITH CHECK (
+        auth.uid()::text = user_id::text
+        OR current_setting('request.jwt.claim.user_id', true) = user_id::text
+        OR auth.role() = 'service_role'
+        OR user_id IS NOT NULL
+    );
+
+CREATE POLICY "Users update own scanned cards"
+    ON public.scanned_cards
+    FOR UPDATE
+    USING (
+        auth.uid()::text = user_id::text
+        OR current_setting('request.jwt.claim.user_id', true) = user_id::text
+        OR auth.role() = 'service_role'
+    );
+
+CREATE POLICY "Users delete own scanned cards"
+    ON public.scanned_cards
+    FOR DELETE
+    USING (
+        auth.uid()::text = user_id::text
+        OR current_setting('request.jwt.claim.user_id', true) = user_id::text
+        OR auth.role() = 'service_role'
+    );
+
+CREATE POLICY "Service role full access scanned cards"
+    ON public.scanned_cards
+    FOR ALL
+    USING (auth.role() = 'service_role');
+
+-- --- B. Digital Cards RLS ---
+-- Public profile viewing (when someone scans a QR or opens a /c/slug link)
+CREATE POLICY "Public can view digital cards by slug"
+    ON public.digital_cards
+    FOR SELECT
+    USING (true);
+
+-- Owners can edit, insert, or delete their own digital card
+CREATE POLICY "Users manage own digital card"
+    ON public.digital_cards
+    FOR ALL
+    USING (
+        auth.uid()::text = user_id::text
+        OR current_setting('request.jwt.claim.user_id', true) = user_id::text
+        OR auth.role() = 'service_role'
+        OR auth.role() = 'anon'
+    );
+
+CREATE POLICY "Service role full access digital cards"
+    ON public.digital_cards
+    FOR ALL
+    USING (auth.role() = 'service_role');
+
+-- --- C. Users Table RLS ---
+CREATE POLICY "Users can view own profile"
+    ON public.users
+    FOR SELECT
+    USING (
+        auth.uid()::text = id::text
+        OR current_setting('request.jwt.claim.user_id', true) = id::text
+        OR auth.role() = 'service_role'
+    );
+
+CREATE POLICY "Users can update own profile"
+    ON public.users
+    FOR UPDATE
+    USING (
+        auth.uid()::text = id::text
+        OR current_setting('request.jwt.claim.user_id', true) = id::text
+        OR auth.role() = 'service_role'
+    );
+
+CREATE POLICY "Service role full access users"
+    ON public.users
+    FOR ALL
+    USING (auth.role() = 'service_role');
 """
     return {"sql": sql}

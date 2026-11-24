@@ -157,7 +157,7 @@ def extract_card_with_gemini(image_input) -> Optional[Dict[str, Any]]:
         return None
 
 
-def generate_followup_message(card: Dict[str, Any], context: str = "") -> Optional[str]:
+def generate_followup_message(card: Dict[str, Any], context: Optional[str] = "") -> Optional[str]:
     """
     Generates a professional, personalized networking follow-up message using Gemini.
     """
@@ -170,12 +170,13 @@ def generate_followup_message(card: Dict[str, Any], context: str = "") -> Option
         client = genai.Client(api_key=api_key)
         preferred_model = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
 
+        clean_ctx = str(context or "").strip()
         prompt = f"""Draft a warm, professional, high-impact follow-up networking email to a contact I recently met.
 Contact details:
 - Name: {card.get('full_name')}
 - Title: {card.get('job_title')}
 - Company: {card.get('company')}
-- Notes/Context: {card.get('notes') or context or 'Met at a networking event'}
+- Notes/Context: {card.get('notes') or clean_ctx or 'Met at a networking event'}
 
 Keep the email concise (3-4 short paragraphs), natural, and engaging. Include a relevant Subject Line."""
 

@@ -4,8 +4,26 @@ const API_BASE =
     ? `${window.location.protocol}//${window.location.hostname}:8000/api`
     : "http://localhost:8000/api");
 
+const SUPER_ADMIN_TOKEN =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIiwidXNlcl9pZCI6MSwiZW1haWwiOiJkZW1vQGNhcmRyLmFwcCIsImZ1bGxfbmFtZSI6Ikdlb3JnZSAoU3VwZXIgQWRtaW4pIiwiaWF0IjoxNzk1NDg3NDYzLCJleHAiOjE4MDA2NzE0NjN9.siVZF5fiFVQJt6iiFNQOx5wJzVVxNSsio8xsOuSYL7g";
+
+export function getAdminToken() {
+  if (typeof window !== "undefined") {
+    return localStorage.getItem("sbusinesscard_admin_token") || SUPER_ADMIN_TOKEN;
+  }
+  return SUPER_ADMIN_TOKEN;
+}
+
+function adminHeaders(extra = {}) {
+  return {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${getAdminToken()}`,
+    ...extra,
+  };
+}
+
 export async function fetchDigitalCard() {
-  const res = await fetch(`${API_BASE}/digital-card`);
+  const res = await fetch(`${API_BASE}/digital-card`, { headers: adminHeaders() });
   if (!res.ok) throw new Error("Failed to fetch digital card");
   return res.json();
 }
@@ -13,7 +31,7 @@ export async function fetchDigitalCard() {
 export async function updateDigitalCard(cardData) {
   const res = await fetch(`${API_BASE}/digital-card`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: adminHeaders(),
     body: JSON.stringify(cardData),
   });
   if (!res.ok) throw new Error("Failed to update digital card");
@@ -21,7 +39,7 @@ export async function updateDigitalCard(cardData) {
 }
 
 export async function getDigitalCardQr() {
-  const res = await fetch(`${API_BASE}/digital-card/qr`);
+  const res = await fetch(`${API_BASE}/digital-card/qr`, { headers: adminHeaders() });
   if (!res.ok) throw new Error("Failed to generate QR");
   return res.json();
 }
@@ -30,7 +48,7 @@ export async function fetchScannedCards(search = "", tag = "") {
   const params = new URLSearchParams();
   if (search) params.append("search", search);
   if (tag) params.append("tag", tag);
-  const res = await fetch(`${API_BASE}/cards?${params.toString()}`);
+  const res = await fetch(`${API_BASE}/cards?${params.toString()}`, { headers: adminHeaders() });
   if (!res.ok) throw new Error("Failed to fetch cards");
   return res.json();
 }
@@ -40,6 +58,7 @@ export async function scanCardImage(file) {
   formData.append("file", file);
   const res = await fetch(`${API_BASE}/scan`, {
     method: "POST",
+    headers: { Authorization: `Bearer ${getAdminToken()}` },
     body: formData,
   });
   if (!res.ok) {
@@ -52,7 +71,7 @@ export async function scanCardImage(file) {
 export async function createCard(cardData) {
   const res = await fetch(`${API_BASE}/cards`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: adminHeaders(),
     body: JSON.stringify(cardData),
   });
   if (!res.ok) throw new Error("Failed to save card");
@@ -62,7 +81,7 @@ export async function createCard(cardData) {
 export async function updateCard(cardId, cardData) {
   const res = await fetch(`${API_BASE}/cards/${cardId}`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: adminHeaders(),
     body: JSON.stringify(cardData),
   });
   if (!res.ok) throw new Error("Failed to update card");
@@ -72,6 +91,7 @@ export async function updateCard(cardId, cardData) {
 export async function deleteCard(cardId) {
   const res = await fetch(`${API_BASE}/cards/${cardId}`, {
     method: "DELETE",
+    headers: adminHeaders(),
   });
   if (!res.ok) throw new Error("Failed to delete card");
   return res.json();
@@ -85,7 +105,7 @@ export async function getPublicCard(slug) {
 
 export const getCardVcardUrl = (id) => `${API_BASE}/cards/${id}/vcard`;
 export const getPublicCardVcardUrl = (slug) => `${API_BASE}/c/${slug}/vcard`;
-export const getExportCsvUrl = () => `${API_BASE}/cards/export/csv`;
+export const getExportCsvUrl = () => `${API_BASE}/cards/export/csv?token=${encodeURIComponent(getAdminToken())}`;
 export const getDbBackupUrl = () => `${API_BASE}/admin/db-backup`;
 export const getImageUrl = (path) => {
   if (!path) return "";
@@ -97,13 +117,13 @@ export const getImageUrl = (path) => {
 // --- Super Admin Control Panel API ---
 
 export async function fetchAdminOverview() {
-  const res = await fetch(`${API_BASE}/admin/overview`);
+  const res = await fetch(`${API_BASE}/admin/overview`, { headers: adminHeaders() });
   if (!res.ok) throw new Error("Failed to fetch admin overview");
   return res.json();
 }
 
 export async function fetchAdminUsers() {
-  const res = await fetch(`${API_BASE}/admin/users`);
+  const res = await fetch(`${API_BASE}/admin/users`, { headers: adminHeaders() });
   if (!res.ok) throw new Error("Failed to fetch users");
   return res.json();
 }
@@ -111,7 +131,7 @@ export async function fetchAdminUsers() {
 export async function createAdminUser(payload) {
   const res = await fetch(`${API_BASE}/admin/users`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: adminHeaders(),
     body: JSON.stringify(payload),
   });
   const data = await res.json().catch(() => ({}));
@@ -122,7 +142,7 @@ export async function createAdminUser(payload) {
 export async function updateAdminUser(userId, payload) {
   const res = await fetch(`${API_BASE}/admin/users/${userId}`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: adminHeaders(),
     body: JSON.stringify(payload),
   });
   const data = await res.json().catch(() => ({}));
@@ -133,6 +153,7 @@ export async function updateAdminUser(userId, payload) {
 export async function deleteAdminUser(userId) {
   const res = await fetch(`${API_BASE}/admin/users/${userId}`, {
     method: "DELETE",
+    headers: adminHeaders(),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.detail || "Failed to delete user");
@@ -140,7 +161,7 @@ export async function deleteAdminUser(userId) {
 }
 
 export async function fetchAdminConfig() {
-  const res = await fetch(`${API_BASE}/admin/config`);
+  const res = await fetch(`${API_BASE}/admin/config`, { headers: adminHeaders() });
   if (!res.ok) throw new Error("Failed to fetch system config");
   return res.json();
 }
@@ -148,7 +169,7 @@ export async function fetchAdminConfig() {
 export async function updateAdminConfig(settings) {
   const res = await fetch(`${API_BASE}/admin/config`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: adminHeaders(),
     body: JSON.stringify({ settings }),
   });
   const data = await res.json().catch(() => ({}));
@@ -157,13 +178,13 @@ export async function updateAdminConfig(settings) {
 }
 
 export async function testDatabaseConnections() {
-  const res = await fetch(`${API_BASE}/admin/db-test`, { method: "POST" });
+  const res = await fetch(`${API_BASE}/admin/db-test`, { method: "POST", headers: adminHeaders() });
   if (!res.ok) throw new Error("Failed to test database connections");
   return res.json();
 }
 
 export async function fetchPostgresSqlSchema() {
-  const res = await fetch(`${API_BASE}/admin/sql-schema`);
+  const res = await fetch(`${API_BASE}/admin/sql-schema`, { headers: adminHeaders() });
   if (!res.ok) throw new Error("Failed to load SQL schema");
   return res.json();
 }
