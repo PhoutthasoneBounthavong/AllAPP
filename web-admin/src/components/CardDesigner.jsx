@@ -27,7 +27,7 @@ export default function CardDesigner({ initialCard, onCardUpdated }) {
     headline: initialCard?.headline || "Designing next-generation spatial computing & AI systems.",
     bio: initialCard?.bio || "",
     theme: initialCard?.theme || "apple_dark",
-    badge_text: initialCard?.badge_text || "VIP Founder",
+    badge_text: initialCard?.badge_text || "Staff",
     phone: initialCard?.phone || "+1 (555) 234-5678",
     email: initialCard?.email || "alex.morgan@auratech.io",
     website: initialCard?.website || "https://auratech.io",
@@ -223,7 +223,7 @@ export default function CardDesigner({ initialCard, onCardUpdated }) {
                   name="badge_text"
                   value={formData.badge_text}
                   onChange={handleInputChange}
-                  placeholder="e.g. VIP Founder / Verified"
+                  placeholder="e.g. Staff / Verified"
                   className="w-full px-3.5 py-2 rounded-apple-sm bg-white dark:bg-[#2C2C2E] border border-black/[0.08] dark:border-white/[0.1] text-xs font-medium text-[#1D1D1F] dark:text-white focus:outline-none focus:ring-2 focus:ring-[#0071E3]"
                 />
               </div>
