@@ -24,7 +24,7 @@ def generate_vcard_content(card_data: Dict[str, Any]) -> str:
     Apple iOS Contacts, Android, Google Contacts, and Outlook.
     Sanitized against vCard property and CRLF injection.
     """
-    raw_name = card_data.get("full_name", "").strip() or "Business Contact"
+    raw_name = str(card_data.get("full_name") or "").strip() or "Business Contact"
     # Remove any control chars or newlines from full name
     clean_full_name = re.sub(r"[\r\n\t]+", " ", raw_name).strip()
     
@@ -32,13 +32,13 @@ def generate_vcard_content(card_data: Dict[str, Any]) -> str:
     first_name = name_parts[0] if name_parts else ""
     last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
     
-    company = card_data.get("company", "").strip()
-    job_title = card_data.get("job_title", "").strip()
-    phone = card_data.get("phone", "").strip()
-    email = card_data.get("email", "").strip()
-    website = card_data.get("website", "").strip()
-    address = card_data.get("address", "").strip()
-    notes = card_data.get("notes", "") or card_data.get("headline", "") or card_data.get("bio", "")
+    company = str(card_data.get("company") or "").strip()
+    job_title = str(card_data.get("job_title") or "").strip()
+    phone = str(card_data.get("phone") or "").strip()
+    email = str(card_data.get("email") or "").strip()
+    website = str(card_data.get("website") or "").strip()
+    address = str(card_data.get("address") or "").strip()
+    notes = str(card_data.get("notes") or card_data.get("headline") or card_data.get("bio") or "").strip()
 
     vcard_lines = [
         "BEGIN:VCARD",

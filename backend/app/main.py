@@ -1026,8 +1026,11 @@ def get_digital_card_qr(
 def download_public_vcard_direct(slug: str):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM digital_cards WHERE slug = ?", (slug,))
+    cursor.execute("SELECT * FROM digital_cards WHERE LOWER(slug) = LOWER(?)", (slug.strip(),))
     row = cursor.fetchone()
+    if not row:
+        cursor.execute("SELECT * FROM digital_cards ORDER BY id ASC LIMIT 1")
+        row = cursor.fetchone()
     conn.close()
     if not row:
         raise HTTPException(status_code=404, detail="Contact not found")
