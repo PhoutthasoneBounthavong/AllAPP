@@ -71,7 +71,7 @@ export default function PublicCardView({ slug }) {
       {/* Footer with safe area avoidance */}
       <footer className="w-full max-w-sm text-center py-4">
         <p className="text-[11px] text-[#86868B]">
-          Powered by <strong className="text-[#1D1D1F] dark:text-white">Cardr Studio</strong> — Apple-Grade Digital Business Cards
+          Powered by <strong className="text-[#1D1D1F] dark:text-white">Cardr Studio</strong> Digital Business Cards Scanner
         </p>
       </footer>
     </div>
