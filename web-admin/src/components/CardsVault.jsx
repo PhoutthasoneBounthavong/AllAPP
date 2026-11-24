@@ -108,11 +108,10 @@ export default function CardsVault({ cards, onRefresh, onSelectCard }) {
               onClick={() => setViewMode("grid")}
               aria-label="Switch to Grid View"
               aria-pressed={viewMode === "grid"}
-              className={`p-2 rounded-apple-sm text-xs transition-all focus-visible:ring-2 focus-visible:ring-[#0071E3] ${
-                viewMode === "grid"
-                  ? "bg-white dark:bg-[#2C2C2E] text-[#0071E3] shadow-sm"
-                  : "text-[#86868B] hover:text-[#1D1D1F] dark:hover:text-white"
-              }`}
+              className={`p-2 rounded-apple-sm text-xs transition-all focus-visible:ring-2 focus-visible:ring-[#0071E3] ${viewMode === "grid"
+                ? "bg-white dark:bg-[#2C2C2E] text-[#0071E3] shadow-sm"
+                : "text-[#86868B] hover:text-[#1D1D1F] dark:hover:text-white"
+                }`}
             >
               <Grid className="w-3.5 h-3.5" aria-hidden="true" />
             </button>
@@ -120,11 +119,10 @@ export default function CardsVault({ cards, onRefresh, onSelectCard }) {
               onClick={() => setViewMode("table")}
               aria-label="Switch to Table View"
               aria-pressed={viewMode === "table"}
-              className={`p-2 rounded-apple-sm text-xs transition-all focus-visible:ring-2 focus-visible:ring-[#0071E3] ${
-                viewMode === "table"
-                  ? "bg-white dark:bg-[#2C2C2E] text-[#0071E3] shadow-sm"
-                  : "text-[#86868B] hover:text-[#1D1D1F] dark:hover:text-white"
-              }`}
+              className={`p-2 rounded-apple-sm text-xs transition-all focus-visible:ring-2 focus-visible:ring-[#0071E3] ${viewMode === "table"
+                ? "bg-white dark:bg-[#2C2C2E] text-[#0071E3] shadow-sm"
+                : "text-[#86868B] hover:text-[#1D1D1F] dark:hover:text-white"
+                }`}
             >
               <ListIcon className="w-3.5 h-3.5" aria-hidden="true" />
             </button>
@@ -200,7 +198,7 @@ export default function CardsVault({ cards, onRefresh, onSelectCard }) {
                 )}
 
                 {/* Contact Snippets */}
-                <div className="space-y-1.5 text-xs text-[#636366] dark:text-[#AEAEB2] mb-4">
+                <div className="space-y-1.5 text-xs text-[#0071E3] dark:text-[#AEAEB2] mb-4">
                   {card.phone && (
                     <div className="space-y-1">
                       {parseMultiplePhones(card.phone).map((p, pIdx, arr) => (
