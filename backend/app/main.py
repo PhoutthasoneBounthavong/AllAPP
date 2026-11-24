@@ -979,45 +979,36 @@ def resolve_public_base_url(request: Optional[Request] = None) -> str:
 @app.get("/api/digital-card/qr")
 def get_digital_card_qr(
     slug: Optional[str] = None,
-    direct: Optional[bool] = False,
-    request: Request = None,
     current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)
 ):
     conn = get_db_connection()
     cursor = conn.cursor()
     if slug:
-        cursor.execute("SELECT slug FROM digital_cards WHERE slug = ?", (slug,))
+        cursor.execute("SELECT * FROM digital_cards WHERE LOWER(slug) = LOWER(?)", (slug.strip(),))
     elif current_user:
-        cursor.execute("SELECT slug FROM digital_cards WHERE user_id = ? ORDER BY id ASC LIMIT 1", (current_user["user_id"],))
+        cursor.execute("SELECT * FROM digital_cards WHERE user_id = ? ORDER BY id ASC LIMIT 1", (current_user["user_id"],))
     else:
-        cursor.execute("SELECT slug FROM digital_cards ORDER BY id ASC LIMIT 1")
+        cursor.execute("SELECT * FROM digital_cards ORDER BY id ASC LIMIT 1")
     row = cursor.fetchone()
+    if not row:
+        cursor.execute("SELECT * FROM digital_cards ORDER BY id ASC LIMIT 1")
+        row = cursor.fetchone()
     conn.close()
     
     if not row:
         raise HTTPException(status_code=404, detail="Card not found")
         
-    target_slug = row["slug"]
-    base_url = resolve_public_base_url(request)
+    card_dict = dict(row)
+    target_slug = card_dict.get("slug")
     
-    # Clean, low-density QR code URLs
-    public_url = f"{base_url}/c/{target_slug}"
-    vcard_url = f"{base_url}/c/{target_slug}/vcard"
-    auto_url = f"{base_url}/c/{target_slug}?auto=1"
-    
-    # Generate sparse, ultra-crisp Apple-style QR codes (small payload = large scannable blocks)
-    qr_data_uri = generate_qr_code_image(public_url)
-    vcard_qr_data_uri = generate_qr_code_image(vcard_url)
-    auto_qr_data_uri = generate_qr_code_image(auto_url)
+    # Direct vCard text: scanning with iPhone/Android camera immediately prompts "Add Contact" (NO website!)
+    vcard_str = generate_vcard_content(card_dict)
+    qr_data_uri = generate_qr_code_image(vcard_str)
     
     return {
         "slug": target_slug,
-        "url": public_url,
-        "vcard_url": vcard_url,
-        "auto_url": auto_url,
+        "vcard": vcard_str,
         "qr_data_uri": qr_data_uri,
-        "vcard_qr_data_uri": vcard_qr_data_uri,
-        "auto_qr_data_uri": auto_qr_data_uri
     }
 
 # 5. Direct Apple & Android Contact Card Download (Scan QR -> Instantly Add Contact to Phone)
