@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env
 load_dotenv()
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Query, Response, status, Depends, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Query, Response, status, Depends, BackgroundTasks, Header
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -29,6 +29,7 @@ from app.auth_service import (
     decode_access_token,
     get_current_user_optional,
     get_current_user_required,
+    require_admin,
 )
 
 # Guard against decompression bomb attacks in PIL
@@ -1045,7 +1046,7 @@ class AdminConfigUpdateRequest(BaseModel):
     settings: Dict[str, Any]
 
 @app.get("/api/admin/overview")
-def admin_get_overview():
+def admin_get_overview(admin_user: Dict[str, Any] = Depends(require_admin)):
     init_db()
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1107,7 +1108,7 @@ def admin_get_overview():
     }
 
 @app.get("/api/admin/users")
-def admin_list_users():
+def admin_list_users(admin_user: Dict[str, Any] = Depends(require_admin)):
     init_db()
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1122,7 +1123,7 @@ def admin_list_users():
     return {"users": users, "total": len(users)}
 
 @app.post("/api/admin/users")
-def admin_create_user(req: AdminCreateUserRequest):
+def admin_create_user(req: AdminCreateUserRequest, admin_user: Dict[str, Any] = Depends(require_admin)):
     init_db()
     email = req.email.strip().lower()
     full_name = req.full_name.strip()
@@ -1159,7 +1160,7 @@ def admin_create_user(req: AdminCreateUserRequest):
     return {"success": True, "user": new_user}
 
 @app.put("/api/admin/users/{user_id}")
-def admin_update_user(user_id: int, req: AdminUpdateUserRequest):
+def admin_update_user(user_id: int, req: AdminUpdateUserRequest, admin_user: Dict[str, Any] = Depends(require_admin)):
     init_db()
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1203,7 +1204,7 @@ def admin_update_user(user_id: int, req: AdminUpdateUserRequest):
     return {"success": True, "user": updated_user}
 
 @app.delete("/api/admin/users/{user_id}")
-def admin_delete_user(user_id: int):
+def admin_delete_user(user_id: int, admin_user: Dict[str, Any] = Depends(require_admin)):
     if user_id == 1:
         raise HTTPException(status_code=400, detail="Primary Super Admin account (ID #1) cannot be deleted.")
     conn = get_db_connection()
@@ -1216,7 +1217,7 @@ def admin_delete_user(user_id: int):
     return {"success": True, "message": f"User #{user_id} and associated cards deleted."}
 
 @app.get("/api/admin/config")
-def admin_get_config():
+def admin_get_config(admin_user: Dict[str, Any] = Depends(require_admin)):
     init_db()
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1247,7 +1248,7 @@ def admin_get_config():
     }
 
 @app.put("/api/admin/config")
-def admin_update_config(req: AdminConfigUpdateRequest):
+def admin_update_config(req: AdminConfigUpdateRequest, admin_user: Dict[str, Any] = Depends(require_admin)):
     init_db()
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1272,7 +1273,7 @@ def admin_update_config(req: AdminConfigUpdateRequest):
     return {"success": True, "settings": updated_settings}
 
 @app.post("/api/admin/db-test")
-def admin_test_database_connections():
+def admin_test_database_connections(admin_user: Dict[str, Any] = Depends(require_admin)):
     import time
     import urllib.request
 
@@ -1322,7 +1323,15 @@ def admin_test_database_connections():
     return {"results": results}
 
 @app.get("/api/admin/db-backup")
-def admin_download_db_backup():
+def admin_download_db_backup(
+    token: Optional[str] = None,
+    authorization: Optional[str] = Header(None)
+):
+    auth_header = authorization
+    if not auth_header and token:
+        auth_header = f"Bearer {token}"
+    require_admin(auth_header)
+
     init_db()
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1361,7 +1370,7 @@ def admin_download_db_backup():
     )
 
 @app.get("/api/admin/sql-schema")
-def admin_get_postgres_migration_sql():
+def admin_get_postgres_migration_sql(admin_user: Dict[str, Any] = Depends(require_admin)):
     sql = """-- =====================================================================
 -- SBusinessCard Platform: PostgreSQL / Supabase Cloud Database Schema
 -- Production Ready with Full Row-Level Security (RLS) & Multi-Tenant Isolation

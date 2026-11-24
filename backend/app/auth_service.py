@@ -117,3 +117,16 @@ def get_current_user_required(authorization: Optional[str] = Header(None)) -> Di
             headers={"WWW-Authenticate": "Bearer"},
         )
     return user
+
+def require_admin(authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
+    """
+    Strict RBAC dependency: rejects requests unless the caller provides a valid JWT
+    and holds 'admin' or 'super_admin' role.
+    """
+    user = get_current_user_required(authorization)
+    if user.get("role") not in ("admin", "super_admin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: Administrative privileges required."
+        )
+    return user

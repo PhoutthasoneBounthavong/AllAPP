@@ -78,15 +78,17 @@ class TestSecurityAndFunctionality(unittest.TestCase):
             ("script.sh", b"#!/bin/bash\nrm -rf /"),
         ]
 
+        from fastapi import BackgroundTasks
         for filename, data in bad_files:
             upload = UploadFile(filename=filename, file=io.BytesIO(data))
             with self.assertRaises(HTTPException) as ctx:
-                asyncio.run(scan_business_card(upload))
+                asyncio.run(scan_business_card(background_tasks=BackgroundTasks(), file=upload))
             self.assertEqual(ctx.exception.status_code, 400)
             self.assertIn("Unsupported file format", ctx.exception.detail)
 
     def test_crud_and_vcard_endpoints(self):
         """Verify CRUD and sanitization in endpoints directly."""
+        mock_user = {"user_id": 1, "role": "super_admin", "status": "active"}
         card_req = CardCreateRequest(
             full_name="Sarah Connor",
             company="Cyberdyne Systems",
@@ -94,28 +96,50 @@ class TestSecurityAndFunctionality(unittest.TestCase):
             email="sarah@resistance.org",
             phone="+1 555-0199"
         )
-        created = create_card(card_req)
+        created = create_card(card_req, current_user=mock_user)
         self.assertTrue(created["success"])
         card_id = created["card"]["id"]
 
         # Fetch
-        fetched = get_card(card_id)
+        fetched = get_card(card_id, current_user=mock_user)
         self.assertEqual(fetched["card"]["full_name"], "Sarah Connor")
 
         # Update
         update_req = CardUpdateRequest(job_title="Chief Security Officer")
-        updated = update_card(card_id, update_req)
+        updated = update_card(card_id, update_req, current_user=mock_user)
         self.assertEqual(updated["card"]["job_title"], "Chief Security Officer")
 
         # Download vCard
-        vcard_resp = download_card_vcard(card_id)
+        vcard_resp = download_card_vcard(card_id, current_user=mock_user)
         self.assertEqual(vcard_resp.status_code, 200)
         self.assertIn("BEGIN:VCARD", vcard_resp.body.decode("utf-8"))
         self.assertIn("Cyberdyne Systems", vcard_resp.body.decode("utf-8"))
 
         # Clean up
-        deleted = delete_card(card_id)
+        deleted = delete_card(card_id, current_user=mock_user)
         self.assertTrue(deleted["success"])
+
+    def test_admin_rbac_security(self):
+        """Verify that admin endpoints strictly reject non-admin users."""
+        from app.auth_service import require_admin
+        from app.main import admin_get_overview, admin_list_users
+
+        # 1. Non-admin user gets 403 Forbidden
+        from app.auth_service import create_access_token
+        normal_token = create_access_token(user_id=999, email="hacker@test.com", full_name="Hacker", role="user")
+        with self.assertRaises(HTTPException) as ctx:
+            require_admin(authorization=f"Bearer {normal_token}")
+        self.assertEqual(ctx.exception.status_code, 403)
+
+        # 2. Super admin succeeds
+        admin_token = create_access_token(user_id=1, email="demo@cardr.app", full_name="Admin", role="super_admin")
+        valid_admin = require_admin(authorization=f"Bearer {admin_token}")
+        self.assertEqual(valid_admin["role"], "super_admin")
+
+        # 3. Overview returns metrics when admin
+        overview = admin_get_overview(admin_user=valid_admin)
+        self.assertIn("metrics", overview)
+        self.assertIn("total_users", overview["metrics"])
 
 if __name__ == "__main__":
     unittest.main()

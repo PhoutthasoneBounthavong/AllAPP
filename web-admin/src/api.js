@@ -106,7 +106,7 @@ export async function getPublicCard(slug) {
 export const getCardVcardUrl = (id) => `${API_BASE}/cards/${id}/vcard`;
 export const getPublicCardVcardUrl = (slug) => `${API_BASE}/c/${slug}/vcard`;
 export const getExportCsvUrl = () => `${API_BASE}/cards/export/csv?token=${encodeURIComponent(getAdminToken())}`;
-export const getDbBackupUrl = () => `${API_BASE}/admin/db-backup`;
+export const getDbBackupUrl = () => `${API_BASE}/admin/db-backup?token=${encodeURIComponent(getAdminToken())}`;
 export const getImageUrl = (path) => {
   if (!path) return "";
   if (path.startsWith("http")) return path;
