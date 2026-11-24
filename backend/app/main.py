@@ -1170,6 +1170,17 @@ def admin_update_user(user_id: int, req: AdminUpdateUserRequest, admin_user: Dic
         conn.close()
         raise HTTPException(status_code=404, detail="User not found")
 
+    # Safety Guard: Prevent admin lockout
+    if user_id == 1 and req.status == "suspended":
+        conn.close()
+        raise HTTPException(status_code=400, detail="Primary Super Admin account (ID #1) cannot be deactivated.")
+    if user_id == admin_user.get("user_id") and req.status == "suspended":
+        conn.close()
+        raise HTTPException(status_code=400, detail="You cannot deactivate your own active admin session.")
+    if user_id == 1 and req.role is not None and req.role != "super_admin":
+        conn.close()
+        raise HTTPException(status_code=400, detail="Primary Super Admin account cannot be demoted.")
+
     updates = []
     params = []
     if req.full_name is not None and req.full_name.strip():
