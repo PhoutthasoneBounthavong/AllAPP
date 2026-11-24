@@ -23,14 +23,14 @@ export default function CardDesigner({ initialCard, onCardUpdated }) {
   const [formData, setFormData] = useState({
     full_name: initialCard?.full_name || "Business Card",
     job_title: initialCard?.job_title || "Chief Executive Officer & Founder",
-    company: initialCard?.company || "Aura Technologies Inc.",
+    company: initialCard?.company || "SBusinessCard Inc.",
     headline: initialCard?.headline || "Designing next-generation spatial computing & AI systems.",
     bio: initialCard?.bio || "",
     theme: initialCard?.theme || "apple_dark",
     badge_text: initialCard?.badge_text || "Staff",
     phone: initialCard?.phone || "+1 (555) 234-5678",
-    email: initialCard?.email || "alex.morgan@auratech.io",
-    website: initialCard?.website || "https://auratech.io",
+    email: initialCard?.email || "alex.morgan@sbusinesscard.app",
+    website: initialCard?.website || "https://sbusinesscard.app",
     address: initialCard?.address || "1 Infinite Loop, Cupertino, CA 95014",
     social_links: initialCard?.social_links || {
       linkedin: "https://linkedin.com",

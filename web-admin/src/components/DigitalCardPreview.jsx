@@ -155,7 +155,7 @@ export default function DigitalCardPreview({ card, isInteractive = true, onShare
             {card?.job_title || "Chief Executive Officer"}
           </p>
           <p className="text-xs font-semibold text-[#0071E3] dark:text-[#409CFF] truncate mt-0.5">
-            {card?.company || "Aura Technologies Inc."}
+            {card?.company || "SBusinessCard Inc."}
           </p>
         </div>
       </div>

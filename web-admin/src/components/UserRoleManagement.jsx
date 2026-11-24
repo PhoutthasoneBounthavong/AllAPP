@@ -347,7 +347,7 @@ export default function UserRoleManagement() {
                   required
                   value={form.email}
                   onChange={(e) => setForm({ ...form, email: e.target.value })}
-                  placeholder="sarah@company.com"
+                  placeholder="sarah@sbusinesscard.app"
                   className="w-full px-3 py-2 rounded-apple-sm bg-white dark:bg-[#2C2C2E] border border-black/10 dark:border-white/10"
                 />
               </div>
