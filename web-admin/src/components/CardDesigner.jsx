@@ -21,7 +21,7 @@ import { updateDigitalCard } from "../api";
 
 export default function CardDesigner({ initialCard, onCardUpdated }) {
   const [formData, setFormData] = useState({
-    full_name: initialCard?.full_name || "Alex Morgan",
+    full_name: initialCard?.full_name || "Business Card",
     job_title: initialCard?.job_title || "Chief Executive Officer & Founder",
     company: initialCard?.company || "Aura Technologies Inc.",
     headline: initialCard?.headline || "Designing next-generation spatial computing & AI systems.",
@@ -162,11 +162,10 @@ export default function CardDesigner({ initialCard, onCardUpdated }) {
                 <button
                   key={t.id}
                   onClick={() => setFormData((prev) => ({ ...prev, theme: t.id }))}
-                  className={`flex items-center gap-3 p-3 rounded-apple-md border text-left transition-all ${
-                    formData.theme === t.id
+                  className={`flex items-center gap-3 p-3 rounded-apple-md border text-left transition-all ${formData.theme === t.id
                       ? "ring-2 ring-[#0071E3] border-transparent shadow-sm"
                       : "border-black/[0.06] dark:border-white/[0.08] hover:border-black/20 dark:hover:border-white/20"
-                  }`}
+                    }`}
                 >
                   <div className={`w-6 h-6 rounded-apple-sm border ${t.preview} shadow-sm shrink-0`} />
                   <span className="text-xs font-medium truncate text-[#1D1D1F] dark:text-white">{t.label}</span>

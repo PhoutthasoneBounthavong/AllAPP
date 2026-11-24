@@ -114,7 +114,7 @@ export default function DigitalCardPreview({ card, isInteractive = true, onShare
             </span>
           )}
         </div>
-        
+
         {/* Subtle NFC/Wireless Wave Icon */}
         <div className="flex items-center gap-1.5 opacity-60 text-xs">
           <span className="text-[10px] uppercase font-mono tracking-wider">TAP / SCAN</span>
@@ -149,7 +149,7 @@ export default function DigitalCardPreview({ card, isInteractive = true, onShare
         {/* Name & Title */}
         <div className="flex-1 min-w-0">
           <h2 className="text-xl font-bold tracking-tight truncate leading-tight">
-            {card?.full_name || "Alex Morgan"}
+            {card?.full_name || "Business Card"}
           </h2>
           <p className="text-xs font-medium text-white/70 dark:text-white/70 truncate mt-0.5">
             {card?.job_title || "Chief Executive Officer"}
