@@ -4,20 +4,57 @@ const API_BASE =
     ? `${window.location.protocol}//${window.location.hostname}:8000/api`
     : "http://localhost:8000/api");
 
-const SUPER_ADMIN_TOKEN =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIiwidXNlcl9pZCI6MSwiZW1haWwiOiJkZW1vQGNhcmRyLmFwcCIsImZ1bGxfbmFtZSI6Ikdlb3JnZSAoU3VwZXIgQWRtaW4pIiwiaWF0IjoxNzk1NDg3NDYzLCJleHAiOjE4MDA2NzE0NjN9.siVZF5fiFVQJt6iiFNQOx5wJzVVxNSsio8xsOuSYL7g";
-
 export function getAdminToken() {
   if (typeof window !== "undefined") {
-    return localStorage.getItem("sbusinesscard_admin_token") || SUPER_ADMIN_TOKEN;
+    return localStorage.getItem("sbusinesscard_admin_token") || "";
   }
-  return SUPER_ADMIN_TOKEN;
+  return "";
+}
+
+export function getStoredAdminUser() {
+  if (typeof window !== "undefined") {
+    try {
+      const u = localStorage.getItem("sbusinesscard_admin_user");
+      return u ? JSON.parse(u) : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+export async function loginAdmin(email, password) {
+  const res = await fetch(`${API_BASE}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: email.trim(), password }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.detail || "Login failed. Please check your credentials.");
+  }
+  if (!data.user || !["admin", "super_admin"].includes(data.user.role)) {
+    throw new Error("Access Denied: Only administrator accounts can access this console.");
+  }
+  if (typeof window !== "undefined") {
+    localStorage.setItem("sbusinesscard_admin_token", data.token);
+    localStorage.setItem("sbusinesscard_admin_user", JSON.stringify(data.user));
+  }
+  return data;
+}
+
+export function logoutAdmin() {
+  if (typeof window !== "undefined") {
+    localStorage.removeItem("sbusinesscard_admin_token");
+    localStorage.removeItem("sbusinesscard_admin_user");
+  }
 }
 
 function adminHeaders(extra = {}) {
+  const token = getAdminToken();
   return {
     "Content-Type": "application/json",
-    Authorization: `Bearer ${getAdminToken()}`,
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...extra,
   };
 }

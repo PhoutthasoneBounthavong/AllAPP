@@ -5,12 +5,18 @@ import UserRoleManagement from "./components/UserRoleManagement";
 import DatabaseConfig from "./components/DatabaseConfig";
 import CardsVault from "./components/CardsVault";
 import PublicCardView from "./components/PublicCardView";
-import { fetchScannedCards } from "./api";
+import AdminLogin from "./components/AdminLogin";
+import { fetchScannedCards, getAdminToken, getStoredAdminUser, logoutAdmin } from "./api";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState("overview"); // 'overview' | 'users' | 'database' | 'vault'
   const [darkMode, setDarkMode] = useState(true);
   const [cards, setCards] = useState([]);
+  const [adminUser, setAdminUser] = useState(() => {
+    const token = getAdminToken();
+    const user = getStoredAdminUser();
+    return token && user ? user : null;
+  });
 
   // Check if viewing a public card directly (e.g. /c/alex-morgan)
   const pathname = window.location.pathname;
@@ -37,14 +43,34 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!publicSlug) {
+    if (!publicSlug && adminUser) {
       loadData();
     }
-  }, [publicSlug]);
+  }, [publicSlug, adminUser]);
+
+  const handleLogout = () => {
+    logoutAdmin();
+    setAdminUser(null);
+    setCards([]);
+  };
 
   // If public card page, render public view directly
   if (publicSlug) {
     return <PublicCardView slug={publicSlug} />;
+  }
+
+  // If not authenticated as Admin, show Apple Admin Login Gate
+  if (!adminUser) {
+    return (
+      <AdminLogin
+        onLoginSuccess={(user) => {
+          setAdminUser(user);
+          loadData();
+        }}
+        darkMode={darkMode}
+        setDarkMode={setDarkMode}
+      />
+    );
   }
 
   return (
@@ -54,6 +80,8 @@ export default function App() {
         setActiveTab={setActiveTab}
         darkMode={darkMode}
         setDarkMode={setDarkMode}
+        user={adminUser}
+        onLogout={handleLogout}
       />
 
       <main className="pb-[max(4rem,calc(2.5rem+env(safe-area-inset-bottom,0px)))] animate-in fade-in duration-200">
