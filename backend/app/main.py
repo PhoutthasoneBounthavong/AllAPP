@@ -1020,25 +1020,31 @@ def get_digital_card_qr(
         "auto_qr_data_uri": auto_qr_data_uri
     }
 
-# 5. Public Card View (when a contact scans your conference QR code)
-@app.get("/c/{slug}", response_class=HTMLResponse)
-def public_card_html_view(slug: str, auto: Optional[int] = 0, download: Optional[int] = 0):
+# 5. Direct Apple & Android Contact Card Download (Scan QR -> Instantly Add Contact to Phone)
+@app.get("/c/{slug}")
+@app.get("/c/{slug}/vcard")
+def download_public_vcard_direct(slug: str):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM digital_cards WHERE slug = ?", (slug,))
     row = cursor.fetchone()
     conn.close()
     if not row:
-        raise HTTPException(status_code=404, detail="Digital business card not found")
+        raise HTTPException(status_code=404, detail="Contact not found")
         
     card_dict = dict(row)
-    should_auto = bool(auto or download)
-    html_content = render_public_card_html(card_dict, auto_download=should_auto)
-    return HTMLResponse(content=html_content, status_code=200)
-
-@app.get("/c/{slug}/vcard")
-def download_public_vcard_shortcut(slug: str):
-    return download_public_card_vcard(slug)
+    vcard_str = generate_vcard_content(card_dict)
+    safe_name = sanitize_filename(card_dict.get("full_name") or "contact")
+    
+    return Response(
+        content=vcard_str,
+        media_type="text/vcard; charset=utf-8",
+        headers={
+            "Content-Disposition": f'inline; filename="{safe_name}.vcf"',
+            "Content-Type": "text/vcard; charset=utf-8",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+        }
+    )
 
 @app.get("/api/c/{slug}")
 def get_public_card(slug: str):
